@@ -1,4 +1,5 @@
 (ns parser.core
+  (:refer-clojure :exclude [compile])
   (:require
    [clojure.string :as str]
    [clojure.java.io :as io])
@@ -33,16 +34,16 @@
   (identical? x SKIP))
 
 
-(defprotocol IReader
+(defprotocol ISource
   (read-char [this])
   (unread-char [this c])
   (unread-string [this string]))
 
 
-(deftype MyReader [^Reader in
-                   ^Stack stack]
+(deftype Source [^Reader in
+                 ^Stack stack]
 
-  IReader
+  ISource
 
   (read-char [this]
     (if (.empty stack)
@@ -60,19 +61,18 @@
       (unread-char this c))))
 
 
-(defn make-reader [in]
-  (new MyReader in (new Stack)))
+(defn make-source [in]
+  (new Source in (new Stack)))
 
 
-(defn make-reader-from-string [^String string]
+(defn make-source-from-string [^String string]
   (-> string
       .getBytes
       io/reader
-      make-reader))
+      make-source))
 
 
-(defn compile-dispatch
-  [[lead & _]]
+(defn compile-dispatch [[lead & _]]
   (cond
     (string? lead) :string
     (char? lead) :char
@@ -92,10 +92,10 @@
                      meta
                      tag
                      mute?]}
-             reader]
+             source]
 
   (let [result
-        (fn-parse parser reader)]
+        (fn-parse parser source)]
 
     (if (failure? result)
       result
@@ -130,13 +130,13 @@
     :fn-parse
     (fn [{:keys [string
                  case-insensitive?]}
-         ^MyReader reader]
+         ^Source source]
 
       (let [result
             (reduce
              (fn [^StringBuilder sb ^Character char-1]
 
-               (let [char-2 (read-char reader)]
+               (let [char-2 (read-char source)]
 
                  (if (eof? char-2)
                    (reduced (failure "EOF reached" (str sb)))
@@ -149,8 +149,8 @@
                      (.append sb char-2)
 
                      (do
-                       (unread-char reader char-2)
-                       (unread-string reader (str sb))
+                       (unread-char source char-2)
+                       (unread-string source (str sb))
 
                        (reduced (failure
                                  (format "String parsing error: expected %s but got %s, case-i flag: %s"
@@ -175,11 +175,11 @@
    {:type :tuple
     :parsers parsers
     :fn-parse
-    (fn [{:keys [parsers]} reader]
+    (fn [{:keys [parsers]} source]
       (reduce
        (fn [acc [i parser]]
          (let [result
-               (parse parser reader)]
+               (parse parser source)]
            (if (failure? result)
              (let [message
                    (format "Error in tuple parser %s" i)]
@@ -196,11 +196,11 @@
    {:type :or
     :parsers parsers
     :fn-parse
-    (fn [{:keys [parsers]} reader]
+    (fn [{:keys [parsers]} source]
       (reduce
        (fn [_ parser]
          (let [result
-               (parse parser reader)]
+               (parse parser source)]
            (if (failure? result)
              result
              (reduced result))))
@@ -214,9 +214,9 @@
    {:type :?
     :parser parser
     :fn-parse
-    (fn [{:keys [parser]} reader]
+    (fn [{:keys [parser]} source]
       (let [result
-            (parse parser reader)]
+            (parse parser source)]
         (if (failure? result)
           SKIP
           result)))}))
@@ -230,9 +230,9 @@
     :char-max char-max
     :exclude exclude
     :fn-parse
-    (fn [{:keys [char-min char-max exclude]} ^MyReader reader]
+    (fn [{:keys [char-min char-max exclude]} ^Source source]
       (let [char-in
-            (read-char reader)]
+            (read-char source)]
 
         (if (eof? char-in)
           (failure "EOF reached" "")
@@ -242,7 +242,7 @@
 
             char-in
             (do
-              (unread-char reader char-in)
+              (unread-char source char-in)
               (let [message
                     (format "Character %s doesn't match range %s-%s, exclude: %s"
                             char-in char-min char-max exclude)]
@@ -255,9 +255,9 @@
    {:type :+
     :parser parser
     :fn-parse
-    (fn [{:keys [parser]} reader]
+    (fn [{:keys [parser]} source]
       (let [result-first
-            (parse parser reader)
+            (parse parser source)
 
             state
             [result-first]]
@@ -266,7 +266,7 @@
           (failure "+ error: the underlying parser didn't appear at least once" state)
           (loop [acc state]
             (let [result
-                  (parse parser reader)]
+                  (parse parser source)]
               (if (failure? result)
                 acc
                 (recur (conj acc result))))))))}))
@@ -278,11 +278,11 @@
    {:type :+str
     :parser parser
     :fn-parse
-    (fn [{:keys [parser]} reader]
+    (fn [{:keys [parser]} source]
       (let [acc (new StringBuilder)
 
             result-first
-            (parse parser reader)]
+            (parse parser source)]
 
         (.append acc result-first)
 
@@ -292,7 +292,7 @@
 
           (loop []
             (let [result
-                  (parse parser reader)]
+                  (parse parser source)]
               (if (failure? result)
                 (str acc)
                 (do
@@ -308,7 +308,7 @@
    {:type :string-of
     :parser parser
     :fn-parse
-    (fn [{:keys [parser]} reader]
+    (fn [{:keys [parser]} source]
       (let [sb (new StringBuilder)]
 
         ))}))
@@ -349,6 +349,7 @@
   (make-+str-parser (compile parser) options))
 
 
+#_
 (defmethod compile 'string-of
   [[_ parser & {:as options}]]
   (make-string-of-parser (compile parser) options))
@@ -413,10 +414,10 @@
   (def -parser
     (compile -spec))
 
-  (def -r
-    (make-reader-from-string "acXdd"))
+  (def -s
+    (make-source-from-string "abcXdd"))
 
-  (parse -parser -r)
+  (parse -parser -s)
 
 
   )
