@@ -8,7 +8,11 @@
 
 
 (defrecord Failure [message state]
-  )
+
+  Object
+
+  (toString [this]
+    (format "<<%s>>" message)))
 
 (defn failure [message state]
   (new Failure message state))
@@ -16,6 +20,17 @@
 
 (defn failure? [x]
   (instance? Failure x))
+
+
+(def EOF ::eof)
+
+(defn eof? [x]
+  (identical? x EOF))
+
+(def SKIP ::skip)
+
+(defn skip? [x]
+  (identical? x SKIP))
 
 
 (defprotocol IReader
@@ -33,7 +48,7 @@
     (if (.empty stack)
       (let [code (.read in)]
         (if (= -1 code)
-          ::eof
+          EOF
           (char code)))
       (.pop stack)))
 
@@ -43,10 +58,6 @@
   (unread-string [this string]
     (doseq [c (str/reverse string)]
       (unread-char this c))))
-
-
-(defn eof? [x]
-  (identical? x ::eof))
 
 
 (defn make-reader [in]
@@ -207,7 +218,7 @@
       (let [result
             (parse parser reader)]
         (if (failure? result)
-          ::skip
+          SKIP
           result)))}))
 
 
@@ -246,15 +257,48 @@
     :fn-parse
     (fn [{:keys [parser]} reader]
       (let [result-first
-            (parse parser reader)]
+            (parse parser reader)
+
+            state
+            [result-first]]
+
         (if (failure? result-first)
-          (failure "+ error: the underlying parser didn't appear at least once" [result-first])
-          (loop [acc [result-first]]
+          (failure "+ error: the underlying parser didn't appear at least once" state)
+          (loop [acc state]
             (let [result
                   (parse parser reader)]
               (if (failure? result)
                 acc
                 (recur (conj acc result))))))))}))
+
+
+(defn make-+str-parser [parser options]
+  (merge
+   options
+   {:type :+str
+    :parser parser
+    :fn-parse
+    (fn [{:keys [parser]} reader]
+      (let [acc (new StringBuilder)
+
+            result-first
+            (parse parser reader)]
+
+        (.append acc result-first)
+
+        (if (failure? result-first)
+
+          (failure "+ error: the underlying parser didn't appear at least once" (str acc))
+
+          (loop []
+            (let [result
+                  (parse parser reader)]
+              (if (failure? result)
+                (str acc)
+                (do
+                  (.append acc result)
+                  (recur))))))))}))
+
 
 
 #_
@@ -298,6 +342,11 @@
 (defmethod compile '+
   [[_ parser & {:as options}]]
   (make-+-parser (compile parser) options))
+
+
+(defmethod compile '+str
+  [[_ parser & {:as options}]]
+  (make-+str-parser (compile parser) options))
 
 
 (defmethod compile 'string-of
@@ -365,7 +414,7 @@
     (compile -spec))
 
   (def -r
-    (make-reader-from-string "abBcXdd"))
+    (make-reader-from-string "acXdd"))
 
   (parse -parser -r)
 
