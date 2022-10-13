@@ -34,6 +34,29 @@
   (identical? x SKIP))
 
 
+(defn make-acc-funcs [acc-type]
+  (case acc-type
+
+    :vec
+    [(constantly [])
+     (fn [coll x]
+       (if (skip? x)
+         coll
+         (conj coll x)))
+     identity]
+
+    :str
+    [(fn []
+       (new StringBuilder))
+
+     (fn [^StringBuilder sb x]
+       (if (skip? x)
+         sb
+         (.append sb x)))
+
+     str]))
+
+
 (defprotocol ISource
   (read-char [this])
   (unread-char [this c])
@@ -91,15 +114,21 @@
                      fn-coerce
                      meta
                      tag
-                     mute?]}
+                     skip?]}
              source]
 
   (let [result
         (fn-parse parser source)]
 
-    (if (failure? result)
+    (cond
+
+      (failure? result)
       result
 
+      skip?
+      SKIP
+
+      :else
       (let [result
             (if fn-coerce
               (fn-coerce result)
@@ -180,10 +209,17 @@
        (fn [acc [i parser]]
          (let [result
                (parse parser source)]
-           (if (failure? result)
+
+           (cond
+             (failure? result)
              (let [message
                    (format "Error in tuple parser %s" i)]
                (reduced (failure message (conj acc result))))
+
+             (skip? result)
+             acc
+
+             :else
              (conj acc result))))
        []
        (enumerate parsers)))}))
@@ -250,68 +286,77 @@
 
 
 (defn make-+-parser [parser options]
-  (merge
-   options
-   {:type :+
-    :parser parser
-    :fn-parse
-    (fn [{:keys [parser]} source]
-      (let [result-first
-            (parse parser source)
 
-            state
-            [result-first]]
+  (let [[acc-new
+         acc-add
+         acc-fin]
+        (make-acc-funcs (get options :acc :vec))]
 
-        (if (failure? result-first)
-          (failure "+ error: the underlying parser didn't appear at least once" state)
-          (loop [acc state]
-            (let [result
-                  (parse parser source)]
-              (if (failure? result)
-                acc
-                (recur (conj acc result))))))))}))
+    (merge
+     options
+     {:type :+
+      :parser parser
+      :fn-parse
+      (fn [{:keys [parser]} source]
+
+        (let [acc
+              (acc-new)
+
+              result-first
+              (parse parser source)
+
+              state
+              (acc-add acc result-first)]
+
+          (if (failure? result-first)
+
+            (failure "+ error: the underlying parser didn't appear at least once"
+                     (acc-fin state))
+
+            (loop [acc state]
+              (let [result
+                    (parse parser source)]
+
+                (if (failure? result)
+                  (acc-fin acc)
+                  (recur (acc-add acc result-first))))))))})))
+
+(defn make-*-parser [parser options]
+
+  (let [[acc-new
+         acc-add
+         acc-fin]
+        (make-acc-funcs (get options :acc :vec))]
+
+    (merge
+     options
+     {:type :*
+      :parser parser
+      :fn-parse
+      (fn [{:keys [parser]} source]
+
+        (let [acc
+              (acc-new)
+
+              result-first
+              (parse parser source)
+
+              state
+              (acc-add acc result-first)]
+
+          (if (failure? result-first)
+            SKIP
+            (loop [acc state]
+              (let [result
+                    (parse parser source)]
+                (if (failure? result)
+                  (acc-fin acc)
+                  (recur (acc-add acc result-first))))))))})))
 
 
-(defn make-+str-parser [parser options]
-  (merge
-   options
-   {:type :+str
-    :parser parser
-    :fn-parse
-    (fn [{:keys [parser]} source]
-      (let [acc (new StringBuilder)
+(defn make-times-parser [n parser options]
 
-            result-first
-            (parse parser source)]
-
-        (.append acc result-first)
-
-        (if (failure? result-first)
-
-          (failure "+ error: the underlying parser didn't appear at least once" (str acc))
-
-          (loop []
-            (let [result
-                  (parse parser source)]
-              (if (failure? result)
-                (str acc)
-                (do
-                  (.append acc result)
-                  (recur))))))))}))
-
-
-
-#_
-(defn make-string-of-parser [parser options]
-  (merge
-   options
-   {:type :string-of
-    :parser parser
-    :fn-parse
-    (fn [{:keys [parser]} source]
-      (let [sb (new StringBuilder)]
-
-        ))}))
+  )
 
 
 (defmethod compile :string
@@ -344,43 +389,29 @@
   (make-+-parser (compile parser) options))
 
 
-(defmethod compile '+str
+(defmethod compile '*
   [[_ parser & {:as options}]]
-  (make-+str-parser (compile parser) options))
+  (make-*-parser (compile parser) options))
 
 
-#_
-(defmethod compile 'string-of
-  [[_ parser & {:as options}]]
-  (make-string-of-parser (compile parser) options))
+(defmethod compile 'times
+  [[_ n parser & {:as options}]]
+  (make-times-parser n (compile parser) options))
 
-
-
-;; *
-;; ws+
-;; ws*
-;; [tuple [ws*
-;;         ["select" :case-insensitive? false]
-;;         ws+
-
-;;         [? [tuple [] :tag :from]]
-;;         [? [tuple
-;;             [ws*
-;;              ["where" :case-insensitive? true]
-;;              ws+
-;;              [+ [range \a \z]]]
-;;             :tag :where]]
-
-
-;;         ["from" :case-insensitive? false]
-;;         ws+
-;;         [+ [range \a \z]]
-;;         ws+
-;;         ]]
 
 (defmethod compile 'range
   [[_ [char-min char-max] & {:as options :keys [exclude]}]]
   (make-range-parser char-min char-max (set exclude) options))
+
+
+(def ws+
+  '[+ [or [["\r"] ["\n"] ["\t"] [\space]]] :acc :str :skip? true])
+
+(def ws*
+  '[* [or [["\r"] ["\n"] ["\t"] [\space]]] :acc :str :skip? true])
+
+(def digit
+  '[range [\0 \9]])
 
 
 (comment
@@ -411,11 +442,29 @@
   (def -spec
     '[tuple [[+ [\a]] [+ [\b :case-insensitive? true]]]])
 
+  (def -spec
+    '[str+ [\a :case-insensitive? true]])
+
+  (def -spec
+    '[+ [\a :case-insensitive? true] :acc :vec])
+
+  (def -spec
+    '[+ [\a :case-insensitive? true] :acc :str])
+
+  (def -s
+    (make-source-from-string "aAaAaabcXdd"))
+
+  (def -spec
+    ['tuple [ws+ digit]])
+
+  (def -spec
+    ['tuple [ws* digit ws* digit]])
+
   (def -parser
     (compile -spec))
 
   (def -s
-    (make-source-from-string "abcXdd"))
+    (make-source-from-string "   \r\n   33"))
 
   (parse -parser -s)
 
