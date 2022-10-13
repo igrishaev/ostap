@@ -56,6 +56,9 @@
 
      str]))
 
+(defn split-args [form]
+  (split-with (complement keyword?) form))
+
 
 (defprotocol ISource
   (read-char [this])
@@ -331,6 +334,7 @@
                   (acc-fin acc)
                   (recur (acc-add acc result-first))))))))})))
 
+
 (defn make-*-parser [parser options]
 
   (let [[acc-new
@@ -414,6 +418,24 @@
   (make-range-parser char-min char-max (set exclude) options))
 
 
+(defmethod compile 'range2
+  [[_ & range-args]]
+
+  (let [[req-args opt-args]
+        (split-args range-args)
+
+        options
+        (apply hash-map opt-args)
+
+        [pos-args neg-args]
+        (split-with (complement #{'- -}) req-args)
+
+        neg-args
+        (next neg-args)]
+
+    [pos-args neg-args options]))
+
+
 (def ws+
   '[+ [or [["\r"] ["\n"] ["\t"] [\space]]] :acc :str :skip? true])
 
@@ -442,25 +464,32 @@
        ["aa" :case-insensitive? true]]])
 
   (def -spec
-    '[tuple
-      [["AA" :tag AAA :case-insensitive? true]
-       [? ["xx"]]
-       ["BB" :case-insensitive? true]]])
+    [:tuple ws* alphanum ws+])
 
   (def -spec
-    '[range [\0 \9] :exclude [\3]])
+    '[range "asdf" \X \Y [\0 \9] [\a \z] "NOT" "#!" \" \_ [\4 \7] "YRCD"
+      :skip? true])
+
+  [tuple \{ [range "abcde" [\0 \9] :not "Z" :skip? true] \}]
+
+  [:range [\u0020 \uffff] [:not \" \\] [:not \0 \9]]
+
+  [:range {\a \z, \A \Z, \0 \9} [:not \" \\] [:not \0 \9]]
+
+  [:range {\a \z, \A \Z, \0 \9} ^:not ["abc"]]
+
+  [:range [\a \z] [\A \Z] [\0 \9] "_+" - \\ \"]
+
+  [:range "aaa" [\u0020 \uffff] [:not [\0 \9] \" "abc"] [:not [\A \Z]]]
+
+
+
 
   (def -spec
-    '[tuple [[+ [\a]] [+ [\b :case-insensitive? true]]]])
+    [:tuple ws "[" ws alphanum ws "]"
+     :coerce? :aaa])
 
-  (def -spec
-    '[str+ [\a :case-insensitive? true]])
 
-  (def -spec
-    '[+ [\a :case-insensitive? true] :acc :vec])
-
-  (def -spec
-    '[+ [\a :case-insensitive? true] :acc :str])
 
   (def -s
     (make-source-from-string "aAaAaabcXdd"))
@@ -484,3 +513,25 @@
 
 
   )
+
+
+
+
+
+(defn parse-range-args [form]
+
+  (let [[lead & form-args]
+        form
+
+        [main-args opt-args]
+        (split-with (complement (partial = :not)) form-args)
+
+        ]
+
+    (if (seq opt-args)
+      (split-with (complement keyword?) (next opt-args))
+
+      (split-with (complement keyword?) (next main-args))
+
+
+      )))
