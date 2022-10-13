@@ -199,30 +199,40 @@
 
 
 (defn make-tuple-parser [parsers options]
-  (merge
-   options
-   {:type :tuple
-    :parsers parsers
-    :fn-parse
-    (fn [{:keys [parsers]} source]
-      (reduce
-       (fn [acc [i parser]]
-         (let [result
-               (parse parser source)]
 
-           (cond
-             (failure? result)
-             (let [message
-                   (format "Error in tuple parser %s" i)]
-               (reduced (failure message (conj acc result))))
+  (let [[acc-new
+         acc-add
+         acc-fin]
+        (make-acc-funcs (get options :acc :vec))]
 
-             (skip? result)
-             acc
+    (merge
+     options
+     {:type :tuple
+      :parsers parsers
+      :fn-parse
+      (fn [{:keys [parsers]} source]
 
-             :else
-             (conj acc result))))
-       []
-       (enumerate parsers)))}))
+        (loop [i 0
+               parsers parsers
+               acc (acc-new)]
+
+          (if-let [parser (first parsers)]
+
+            (let [result
+                  (parse parser source)
+
+                  acc
+                  (acc-add acc result)]
+
+              (if (failure? result)
+
+                (let [message
+                      (format "Error in tuple parser %s" i)]
+                  (failure message (acc-fin acc)))
+
+                (recur (inc i) (next parsers) acc)))
+
+            (acc-fin acc))))})))
 
 
 (defn make-or-parser [parsers options]
@@ -423,7 +433,8 @@
     '[tuple
       [["aa" :case-insensitive? true]
        ["bb" :case-insensitive? true]
-       ["cc" :case-insensitive? true]]])
+       ["cc" :case-insensitive? true]]
+      :acc :str])
 
   (def -spec
     '[or
@@ -453,6 +464,9 @@
 
   (def -s
     (make-source-from-string "aAaAaabcXdd"))
+
+  (def -s
+    (make-source-from-string "aAbBcC"))
 
   (def -spec
     ['tuple [ws+ digit]])
