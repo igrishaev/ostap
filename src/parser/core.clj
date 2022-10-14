@@ -271,33 +271,6 @@
           result)))}))
 
 
-(defn make-range-parser [char-min char-max exclude options]
-  (merge
-   options
-   {:type :range
-    :char-min char-min
-    :char-max char-max
-    :exclude exclude
-    :fn-parse
-    (fn [{:keys [char-min char-max exclude]} ^Source source]
-      (let [char-in
-            (read-char source)]
-
-        (if (eof? char-in)
-          (failure "EOF reached" "")
-
-          (if (and (<= (int char-min) (int char-in) (int char-max))
-                   (not (contains? exclude char-in)))
-
-            char-in
-            (do
-              (unread-char source char-in)
-              (let [message
-                    (format "Character %s doesn't match range %s-%s, exclude: %s"
-                            char-in char-min char-max exclude)]
-                (failure message char-in)))))))}))
-
-
 (defn make-+-parser [parser options]
 
   (let [[acc-new
@@ -368,9 +341,62 @@
                   (recur (acc-add acc result-first))))))))})))
 
 
-(defn make-times-parser [n parser options]
+;; ;; times
+;; [times 4 \a]
+;; [times [3 6] \a]
 
-  )
+;; [times 3]
+;; [times [2]]
+;; [times [2 4]]
+
+
+(defn make-times-parser [times parser options]
+
+  (let [[acc-new
+         acc-add
+         acc-fin]
+        (make-acc-funcs (get options :acc :vec))
+
+        [times-min times-max]
+        (cond
+          (int? times)
+          [times times]
+          (vector? times)
+          times
+          :else
+          (throw (ex-info "Wrong times argument" {:times times})))]
+
+    (merge
+     options
+     {:type :times
+      :parser parser
+      :times-min times-min
+      :times-max times-max
+      :fn-parse
+      (fn [_ source]
+
+        #_
+        (loop [n 0
+               acc (acc-new)]
+
+          (let [result
+                (parse parser source)]
+
+            (if (failure? result)
+
+              yes
+
+              (if (= n (if (nil? times-max)
+                         times-min
+                         times-max))
+
+                finish
+                next)))))})))
+
+
+(defmethod compile :times
+  [[_ times parser & {:as options}]]
+  (make-times-parser times (compile parser) options))
 
 
 (defmethod compile :string
@@ -413,27 +439,124 @@
   (make-times-parser n (compile parser) options))
 
 
+
+(defn collect-range-args [args]
+  (reduce
+   (fn [acc arg]
+     (cond
+
+       (char? arg)
+       (update acc :chars conj arg)
+
+       (string? arg)
+       (update acc :chars into (seq arg))
+
+       (vector? arg)
+       (update acc :ranges conj arg)
+
+       :else
+       (throw (ex-info "Wrong range argument" {:arg arg}))))
+
+   {:chars #{}
+    :ranges #{}}
+   args))
+
+
+(defn char-in-range? [c [c-min c-max]]
+  ;; TODO: use compare
+  (<= (int c-min) (int c) (int c-max)))
+
+
+
+(defn fn-range-parser
+  [{:keys [chars-pos
+           ranges-pos
+           chars-neg
+           ranges-neg]}
+   ^Source source]
+
+  (let [char-in
+        (read-char source)]
+
+    (if (eof? char-in)
+      (failure "EOF reached" "<EOF>")
+
+      (let [allowed?
+            (if (or (contains? chars-neg char-in)
+                    (when ranges-neg
+                      (some (partial char-in-range? char-in) ranges-neg)))
+              false
+              (if (or chars-pos ranges-pos)
+                (or (contains? chars-pos char-in)
+                    (when ranges-pos
+                      (some (partial char-in-range? char-in) ranges-pos)))
+                true))]
+
+        (if allowed?
+          char-in
+          (do
+            (unread-char source char-in)
+            (let [message
+                  (with-out-str
+                    (printf "Character %s is not allowed for this parser. " char-in)
+                    (when (or chars-pos ranges-pos)
+                      (print "The allowed characters are ")
+                      (doseq [c chars-pos]
+                        (print c))
+                      (doseq [[c-min c-max] ranges-pos]
+                        (printf "[%s-%s]" c-min c-max)))
+                    (print \.)
+                    (when (or chars-neg ranges-neg)
+                      (print "The disallowed characters are ")
+                      (doseq [c chars-neg]
+                        (print c))
+                      (doseq [[c-min c-max] ranges-neg]
+                        (printf "[%s-%s]" c-min c-max))))]
+              (failure message char-in))))))))
+
+
+(defn make-range-parser
+  [args-pos args-neg options]
+
+  (let [{chars-pos :chars
+         ranges-pos :ranges}
+        (collect-range-args args-pos)
+
+        {chars-neg :chars
+         ranges-neg :ranges}
+        (collect-range-args args-neg)]
+
+    (merge
+     options
+     {:type :range
+      :chars-pos (not-empty chars-pos)
+      :ranges-pos (not-empty ranges-pos)
+      :chars-neg (not-empty chars-neg)
+      :ranges-neg (not-empty ranges-neg)
+      :fn-parse fn-range-parser})))
+
+
+
 (defmethod compile 'range
-  [[_ [char-min char-max] & {:as options :keys [exclude]}]]
-  (make-range-parser char-min char-max (set exclude) options))
+  [[_ & args-raw]]
 
-
-(defmethod compile 'range2
-  [[_ & range-args]]
-
-  (let [[req-args opt-args]
-        (split-args range-args)
+  (let [[args-req args-opt]
+        (split-args args-raw)
 
         options
-        (apply hash-map opt-args)
+        (apply hash-map args-opt)
 
-        [pos-args neg-args]
-        (split-with (complement #{'- -}) req-args)
+        [args-pos args-neg]
+        (split-with (complement #{'- -}) args-req)
 
-        neg-args
-        (next neg-args)]
+        args-neg
+        (next args-neg)]
 
-    [pos-args neg-args options]))
+    (make-range-parser args-pos args-neg options)))
+
+
+
+
 
 
 (def ws+
@@ -449,89 +572,15 @@
 (comment
 
   (def -spec
-    '["AAA" :case-insensitive? true])
-
-  (def -spec
-    '[tuple
-      [["aa" :case-insensitive? true]
-       ["bb" :case-insensitive? true]
-       ["cc" :case-insensitive? true]]
-      :acc :str])
-
-  (def -spec
-    '[or
-      [["bb" :case-insensitive? true]
-       ["aa" :case-insensitive? true]]])
-
-  (def -spec
-    [:tuple ws* alphanum ws+])
-
-  (def -spec
-    '[range "asdf" \X \Y [\0 \9] [\a \z] "NOT" "#!" \" \_ [\4 \7] "YRCD"
-      :skip? true])
-
-  [tuple \{ [range "abcde" [\0 \9] :not "Z" :skip? true] \}]
-
-  [:range [\u0020 \uffff] [:not \" \\] [:not \0 \9]]
-
-  [:range {\a \z, \A \Z, \0 \9} [:not \" \\] [:not \0 \9]]
-
-  [:range {\a \z, \A \Z, \0 \9} ^:not ["abc"]]
-
-  [:range [\a \z] [\A \Z] [\0 \9] "_+" - \\ \"]
-
-  [:range "aaa" [\u0020 \uffff] [:not [\0 \9] \" "abc"] [:not [\A \Z]]]
-
-
-
-
-  (def -spec
-    [:tuple ws "[" ws alphanum ws "]"
-     :coerce? :aaa])
-
-
-
-  (def -s
-    (make-source-from-string "aAaAaabcXdd"))
-
-  (def -s
-    (make-source-from-string "aAbBcC"))
-
-  (def -spec
-    ['tuple [ws+ digit]])
-
-  (def -spec
-    ['tuple [ws* digit ws* digit]])
+    '[range [\a \z] [\0 \9] "ABC" - "_" [\3 \5]])
 
   (def -parser
     (compile -spec))
 
   (def -s
-    (make-source-from-string "   \r\n   33"))
+    (make-source-from-string "4"))
 
   (parse -parser -s)
 
 
   )
-
-
-
-
-
-(defn parse-range-args [form]
-
-  (let [[lead & form-args]
-        form
-
-        [main-args opt-args]
-        (split-with (complement (partial = :not)) form-args)
-
-        ]
-
-    (if (seq opt-args)
-      (split-with (complement keyword?) (next opt-args))
-
-      (split-with (complement keyword?) (next main-args))
-
-
-      )))
