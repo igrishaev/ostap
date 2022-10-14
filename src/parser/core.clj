@@ -161,7 +161,7 @@
     :string string
     :fn-parse
     (fn [{:keys [string
-                 case-insensitive?]}
+                 i?]}
          ^Source source]
 
       (let [result
@@ -173,7 +173,7 @@
                  (if (eof? char-2)
                    (reduced (failure "EOF reached" (str sb)))
 
-                   (if (if case-insensitive?
+                   (if (if i?
                          (= (Character/toLowerCase ^Character char-1)
                             (Character/toLowerCase ^Character char-2))
                          (= char-1 char-2))
@@ -185,8 +185,8 @@
                        (unread-string source (str sb))
 
                        (reduced (failure
-                                 (format "String parsing error: expected %s but got %s, case-i flag: %s"
-                                         char-1 char-2 case-insensitive?)
+                                 (format "String parsing error: expected %s but got %s, i? flag: %s"
+                                         char-1 char-2 i?)
                                  (str sb))))))))
 
              (new StringBuilder)
