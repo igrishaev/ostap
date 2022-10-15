@@ -1,0 +1,43 @@
+
+
+{
+
+ ws
+ [* [or \r \n \t \space] :skip? true]
+
+ comma
+ [\, :skip? true]
+
+ json/json
+ [or
+  json/object json/array
+  json/string json/number
+  "true" "false" "null"]
+
+ json/array
+ [> [\[ :skip? true] [join comma json/json] [\] :skip? true]]
+
+ json/keyvals
+ json/keyval
+ json/keyval \, json/keyvals
+
+
+ json/object
+ [> \{  \} :acc :map]
+
+ json/keyvals
+ [join comma json/keyval]
+
+ json/keyval
+ [> json/string [\: :skip? true] json/json]
+
+ json/string
+ []
+
+
+
+
+
+
+
+ }
