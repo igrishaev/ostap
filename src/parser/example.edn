@@ -1,5 +1,4 @@
 
-
 {
 
  ws
@@ -8,36 +7,61 @@
  comma
  [\, :skip? true]
 
+ colon
+ [\: :skip? true]
+
+ <arr ["[" :skip? true]
+ arr> ["]" :skip? true]
+
+ <obj ["{" :skip? true]
+ obj> ["}" :skip? true]
+
+ quote [\" :skip? true]
+
+ json/true
+ ["true" :return true]
+
+ json/false
+ ["false" :return true]
+
+ json/null
+ ["null" :return nil]
+
  json/json
  [or
-  json/object json/array
-  json/string json/number
-  "true" "false" "null"]
+  json/object
+  json/array
+  json/string
+  json/number
+  json/true
+  json/false
+  json/null]
 
  json/array
- [> [\[ :skip? true] [join comma json/json] [\] :skip? true]]
-
- json/keyvals
- json/keyval
- json/keyval \, json/keyvals
-
+ [or
+  [> <arr ws arr> :return []]
+  [> <arr [join comma json/json] arr>]]
 
  json/object
- [> \{  \} :acc :map]
+ [or
+  [> <obj ws obj> :return {}]
+  [> <obj [join comma object/keyval] obj>]]
 
- json/keyvals
- [join comma json/keyval]
-
- json/keyval
- [> json/string [\: :skip? true] json/json]
+ object/keyval
+ [> json/string colon json/json]
 
  json/string
- []
+ [> quote [* string/char] quote]
 
+ string/char
+ [or
+  [range [\u0020 \uffff] - \" \\]
+  string/escaped]
 
-
-
-
-
+ string/escaped
+ [or
+  ["\\n"  :return \n]
+  ["\\r"  :return \r]
+  ["\\t"  :return \t]]
 
  }
