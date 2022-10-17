@@ -186,6 +186,41 @@
       (map->?Parser)))
 
 
+;;
+;; OrParser
+;;
+
+(defrecord OrParser [parsers options]
+
+  IParser
+
+  (-parse [this chars]
+    (loop [[parser & parsers] parsers]
+      (if parser
+        1
+
+        )
+
+      )
+
+    #_
+    (reduce
+     (fn [_ parser]
+
+       )
+     nil
+     parsers)
+
+
+    #_
+    (match (parse-inner parser chars)
+      (Success s)
+      s
+      (Failure f)
+      (success SKIP chars))))
+
+
+
 (extend-protocol IParser
 
   clojure.lang.Symbol
