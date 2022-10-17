@@ -2,6 +2,13 @@
   (:refer-clojure :exclude [compile]))
 
 
+(def SKIP ::skip)
+
+
+(defn skip? [x]
+  (identical? x SKIP))
+
+
 (defmacro match
   {:style/indent 1}
   [x & pattern-body]
@@ -156,6 +163,29 @@
       (map->GroupParser)))
 
 
+;;
+;; ?Parser
+;;
+
+
+(defrecord ?Parser [parser]
+
+  IParser
+
+  (-parse [this chars]
+    (match (parse-inner parser chars)
+      (Success s)
+      s
+      (Failure f)
+      (success SKIP chars))))
+
+
+(defn make-?-parser [parser options]
+  (-> options
+      (merge {:parser parser})
+      (map->?Parser)))
+
+
 (extend-protocol IParser
 
   clojure.lang.Symbol
@@ -205,6 +235,11 @@
         (apply hash-map args-opt)]
 
     (make-group-parser (mapv -compile args-req) options)))
+
+
+(defmethod -compile-vector '?
+  [[_ parser & {:as options}]]
+  (make-?-parser (-compile parser) options))
 
 
 ;;
@@ -269,11 +304,14 @@
     "ccc"
 
     some/parser
-    [> char/aaa char/bbb char/ccc]})
+    [> char/aaa [? char/bbb] char/ccc]
+
+    some/foo
+    [? some/parser]})
 
 
 (def -defs
   (compile-defs -spec))
 
 #_
-(parse -defs 'some/parser "aaaBBBccc")
+(parse -defs 'some/parser "aaaccc")
