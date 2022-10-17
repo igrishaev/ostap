@@ -22,7 +22,7 @@
         cond-body
         (-> cond-body
             (conj :else)
-            (conj `(throw (ex-info "No matching pattern found"))))]
+            (conj `(throw (ex-info "No matching pattern found" {}))))]
 
     `(let [~x-sym ~x]
        (cond ~@cond-body))))
@@ -74,6 +74,10 @@
   (-parse [this chars]))
 
 
+(defn parse-inner [sym chars]
+  (-parse sym chars))
+
+
 ;;
 ;; StringParser
 ;;
@@ -81,13 +85,36 @@
 (defrecord StringParser
     [string i?]
 
-  IParser
+    IParser
 
-  (-parse [_ chars]
-    (let [[c & chars] chars]
-      (if c
-        (success c chars)
-        (failure "EOF" "")))))
+    (-parse [_ chars]
+
+      (loop [sb (new StringBuilder)
+             string string
+             chars chars]
+
+        (let [[ch1 & string] string
+              [ch2 & chars] chars]
+
+          (cond
+
+            (nil? ch1)
+            (success (str sb) chars)
+
+            (nil? ch2)
+            (failure "EOF reached" (str sb))
+
+            (if i?
+              (= (Character/toLowerCase ^Character ch1)
+                 (Character/toLowerCase ^Character ch2))
+              (= ch1 ch2))
+            (recur (.append sb ch2) string chars)
+
+            :else
+            (failure
+             (format "Expected %s but got %s, i?: %s"
+                     ch1 ch2 i?)
+             (str sb)))))))
 
 
 (defn make-string-parser [string options]
@@ -102,7 +129,7 @@
 
   (-parse [this chars]
     (if-let [parser (get *definitions* this)]
-      (-parse parser chars)
+      (parse-inner parser chars)
       (failure (format "No definition found for parser %s" this) nil))))
 
 
@@ -172,13 +199,6 @@
    spec))
 
 
-(defn parse-inner [sym chars]
-  (-parse sym chars))
-
-
-
-
-
 (defn parse [defs sym chars]
   (binding [*definitions* defs]
 
@@ -186,71 +206,24 @@
       (Success {:keys [data]})
       data
 
-      (Failure f)
-      (throw (ex-info "Parsing failure"
+      (Failure {:as f :keys [message]})
+      (throw (ex-info (format "Parsing failure: %s" message)
                       {:failure f :symbol sym})))))
 
 
 (def -spec
-  '{some/parser
-    ["foo" :aa 42]})
+  '{char/aaa
+    ["aaa" :i? false]
+
+    char/bbb
+    ["bbb" :i? false]
+
+    some/parser
+    ["aaaaaaa" :i? false]})
 
 
 (def -defs
   (compile-defs -spec))
 
 #_
-(parse -defs 'some/parser "aaa")
-
-
-
-
-
-
-
-
-
-
-
-#_
-(defrecord GroupParser [parsers]
-
-  IParser
-
-  (-parse [_ chars]
-    (loop [i 0
-           acc []
-           chars chars
-           parsers parsers]
-      (if-let [parser (first parsers)]
-        (let [{:keys [success? data chars error?]}
-              (-parse parser chars)]
-          #_
-          (cond
-            success?
-            (recur (inc i) (conj acc data) chars (next parsers))
-            error?
-            (failure "aaaa" (conj acc result))))
-        #_
-        (success acc chars)))))
-
-
-#_
-(defrecord ?Parser [parser]
-
-  IParser
-
-  #_
-  (-parse [_ chars]
-    (let [{:as result :keys [success? error?]}
-          (-parse parser chars)]
-      (cond
-        success?
-        (success data chars)
-
-
-        )
-      )
-
-    )
-  )
+(parse -defs 'some/parser "AAAAAAAAAAAAAAAAA")
