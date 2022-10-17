@@ -96,7 +96,7 @@
       (cond
 
         (nil? ch1)
-        (success (str sb) chars)
+        (success (str sb) (cons ch2 chars))
 
         (nil? ch2)
         (failure "EOF reached" (str sb))
@@ -166,6 +166,9 @@
       (failure (format "No definition found for parser %s" this) nil))))
 
 
+(defprotocol ICompiler
+  (-compile [this]))
+
 ;;
 ;; MM-compiler
 ;;
@@ -201,8 +204,6 @@
         options
         (apply hash-map args-opt)]
 
-    (println args-req options)
-
     (make-group-parser (mapv -compile args-req) options)))
 
 
@@ -211,8 +212,7 @@
 ;;
 
 
-(defprotocol ICompiler
-  (-compile [this]))
+
 
 
 (extend-protocol ICompiler
@@ -250,7 +250,7 @@
   (binding [*definitions* defs]
 
     (match (parse-inner sym chars)
-      (Success {:keys [data]})
+      (Success {:keys [data chars]})
       data
 
       (Failure {:as f :keys [message]})
