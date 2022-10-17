@@ -2,6 +2,32 @@
   (:refer-clojure :exclude [compile]))
 
 
+(defmacro match
+  {:style/indent 1}
+  [x & pattern-body]
+  (let [x-sym
+        (gensym "x")
+
+        cond-body
+        (reduce
+         (fn [acc [[Record bind] body]]
+           (-> acc
+               (conj `(instance? ~Record ~x-sym))
+               (conj `(let [~bind ~x-sym]
+                        ~body))))
+         []
+         (partition 2 pattern-body))
+
+
+        cond-body
+        (-> cond-body
+            (conj :else)
+            (conj `(throw (ex-info "No matching pattern found"))))]
+
+    `(let [~x-sym ~x]
+       (cond ~@cond-body))))
+
+
 (def ^:dynamic *definitions* nil)
 
 
@@ -150,9 +176,19 @@
   (-parse sym chars))
 
 
+
+
+
 (defn parse [defs sym chars]
   (binding [*definitions* defs]
-    (parse-inner sym chars)))
+
+    (match (parse-inner sym chars)
+      (Success {:keys [data]})
+      data
+
+      (Failure f)
+      (throw (ex-info "Parsing failure"
+                      {:failure f :symbol sym})))))
 
 
 (def -spec
@@ -164,7 +200,7 @@
   (compile-defs -spec))
 
 #_
-(parse-main -defs 'some/parser "aaa")
+(parse -defs 'some/parser "aaa")
 
 
 
