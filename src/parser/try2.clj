@@ -1,4 +1,5 @@
-(ns parser.try2)
+(ns parser.try2
+  (:refer-clojure :exclude [compile]))
 
 
 (def ^:dynamic *definitions* nil)
@@ -69,6 +70,16 @@
       (map->StringParser)))
 
 
+(extend-protocol IParser
+
+  clojure.lang.Symbol
+
+  (-parse [this chars]
+    (if-let [parser (get *definitions* this)]
+      (-parse parser chars)
+      (failure (format "No definition found for parser %s" this) nil))))
+
+
 ;;
 ;; MM-compiler
 ;;
@@ -82,13 +93,13 @@
 
 
 (defmethod -compile-vector :string
-  [string & {:as options}]
+  [[string & {:as options}]]
   (make-string-parser string options))
 
 
 (defmethod -compile-vector :char
-  [c & {:as options}]
-  (make-string-parser (str c) options))
+  [[ch & {:as options}]]
+  (make-string-parser (str ch) options))
 
 
 ;;
@@ -125,6 +136,36 @@
 
   (-compile [this]
     (-compile-vector this)))
+
+
+(defn compile-defs [spec]
+  (reduce-kv
+   (fn [acc sym parser]
+     (assoc acc sym (-compile parser)))
+   {}
+   spec))
+
+
+(defn parse-inner [sym chars]
+  (-parse sym chars))
+
+
+(defn parse [defs sym chars]
+  (binding [*definitions* defs]
+    (parse-inner sym chars)))
+
+
+(def -spec
+  '{some/parser
+    ["foo" :aa 42]})
+
+
+(def -defs
+  (compile-defs -spec))
+
+#_
+(parse-main -defs 'some/parser "aaa")
+
 
 
 
