@@ -74,8 +74,8 @@
   (-parse [this chars]))
 
 
-(defn parse-inner [sym chars]
-  (-parse sym chars))
+(defn parse-inner [parser chars]
+  (-parse parser chars))
 
 
 ;;
@@ -85,42 +85,75 @@
 (defrecord StringParser
     [string i?]
 
-    IParser
+  IParser
 
-    (-parse [_ chars]
+  (-parse [_ chars]
 
-      (loop [sb (new StringBuilder)
-             string string
-             chars chars]
+    (loop [sb (new StringBuilder)
+           [ch1 & string] string
+           [ch2 & chars] chars]
 
-        (let [[ch1 & string] string
-              [ch2 & chars] chars]
+      (cond
 
-          (cond
+        (nil? ch1)
+        (success (str sb) chars)
 
-            (nil? ch1)
-            (success (str sb) chars)
+        (nil? ch2)
+        (failure "EOF reached" (str sb))
 
-            (nil? ch2)
-            (failure "EOF reached" (str sb))
+        (if i?
+          (= (Character/toLowerCase ^Character ch1)
+             (Character/toLowerCase ^Character ch2))
+          (= ch1 ch2))
+        (recur (.append sb ch2) string chars)
 
-            (if i?
-              (= (Character/toLowerCase ^Character ch1)
-                 (Character/toLowerCase ^Character ch2))
-              (= ch1 ch2))
-            (recur (.append sb ch2) string chars)
-
-            :else
-            (failure
-             (format "Expected %s but got %s, i?: %s"
-                     ch1 ch2 i?)
-             (str sb)))))))
+        :else
+        (failure
+         (format "Expected %s but got %s, i?: %s"
+                 ch1 ch2 i?)
+         (str sb))))))
 
 
 (defn make-string-parser [string options]
   (-> options
       (merge {:string string})
       (map->StringParser)))
+
+
+;;
+;; GroupParser
+;;
+
+(defrecord GroupParser [parsers]
+
+  IParser
+
+  (-parse [this chars]
+
+    (loop [i 0
+           [parser & parsers] parsers
+           acc []
+           chars chars]
+
+      (if parser
+
+        (match (parse-inner parser chars)
+
+          (Success {:keys [data chars]})
+          (recur (inc i) parsers (conj acc data) chars)
+
+          (Failure f)
+          (let [message
+                (format "Parser %s failed" i)]
+            (failure message (conj acc f))))
+
+        (success acc chars)))))
+
+
+(defn make-group-parser [parsers options]
+  (-> options
+      (merge {:parsers parsers})
+      (map->GroupParser)))
 
 
 (extend-protocol IParser
@@ -136,6 +169,11 @@
 ;;
 ;; MM-compiler
 ;;
+
+
+(defn split-args [form]
+  (split-with (complement keyword?) form))
+
 
 (defmulti -compile-vector
   (fn [[lead]]
@@ -153,6 +191,19 @@
 (defmethod -compile-vector :char
   [[ch & {:as options}]]
   (make-string-parser (str ch) options))
+
+
+(defmethod -compile-vector '>
+  [[_ & args]]
+  (let [[args-req args-opt]
+        (split-args args)
+
+        options
+        (apply hash-map args-opt)]
+
+    (println args-req options)
+
+    (make-group-parser (mapv -compile args-req) options)))
 
 
 ;;
@@ -179,11 +230,7 @@
   clojure.lang.Symbol
 
   (-compile [this]
-    (if-let [parser (get *definitions* this)]
-      (-compile parser)
-      (throw (ex-info
-              (format "No definition found for parser %s" this)
-              {:parser this}))))
+    this)
 
   clojure.lang.PersistentVector
 
@@ -216,14 +263,17 @@
     ["aaa" :i? false]
 
     char/bbb
-    ["bbb" :i? false]
+    ["BBB" :i? true]
+
+    char/ccc
+    "ccc"
 
     some/parser
-    ["aaaaaaa" :i? false]})
+    [> char/aaa char/bbb char/ccc]})
 
 
 (def -defs
   (compile-defs -spec))
 
 #_
-(parse -defs 'some/parser "AAAAAAAAAAAAAAAAA")
+(parse -defs 'some/parser "aaaBBBccc")
