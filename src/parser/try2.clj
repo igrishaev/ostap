@@ -81,8 +81,62 @@
   (-parse [this chars]))
 
 
-(defn parse-inner [parser chars]
-  (-parse parser chars))
+(defn supports-meta? [x]
+  (instance? clojure.lang.IMeta x))
+
+
+(defmacro as
+  {:style/indent 1}
+  [x [bind] & body]
+  `(let [~bind ~x]
+     ~@body))
+
+
+(defn parse-inner [{:as parser
+                    :keys [tag
+                           meta
+                           coerce
+                           return]}
+                   chars]
+
+  (match (-parse parser chars)
+
+    (Success {:as s :keys [data chars]})
+
+    (let [[e data]
+          (if coerce
+            (try
+              [nil (coerce data)]
+              (catch Throwable e
+                [e nil]))
+            [nil data])]
+
+      (if e
+        (failure (format "Coercion error: %s" (ex-message e))
+                 data)
+
+        (cond-> data
+
+          return
+          (as [_]
+            return)
+
+          meta
+          (as [x]
+            (if (supports-meta? x)
+              (with-meta x meta)
+              x))
+
+          tag
+          (as [x]
+            [tag x])
+
+          :finally
+          (as [x]
+            (success x chars)))))
+
+    (Failure f)
+    f))
 
 
 ;;
@@ -416,6 +470,18 @@
 (defprotocol ICompiler
   (-compile [this]))
 
+
+(defn resolve-func [sym]
+  (or (some-> sym resolve deref)
+      (throw (ex-info "Function not found" {:sym sym}))))
+
+
+(defn compile-inner [x]
+  (let [c (-compile x)]
+    (cond-> c
+      (:coerce c)
+      (update :coerce resolve-func))))
+
 ;;
 ;; MM-compiler
 ;;
@@ -448,7 +514,7 @@
         (split-args args)
         options
         (apply hash-map args-opt)]
-    (make-group-parser (mapv -compile args-req) options)))
+    (make-group-parser (mapv compile-inner args-req) options)))
 
 
 (defmethod -compile-vector '>
@@ -458,7 +524,7 @@
 
 (defmethod -compile-vector '?
   [[_ parser & {:as options}]]
-  (make-?-parser (-compile parser) options))
+  (make-?-parser (compile-inner parser) options))
 
 
 (defmethod -compile-vector 'or
@@ -470,22 +536,22 @@
         options
         (apply hash-map args-opt)]
 
-    (make-or-parser (mapv -compile args-req) options)))
+    (make-or-parser (mapv compile-inner args-req) options)))
 
 
 (defmethod -compile-vector '+
   [[_ parser & {:as options}]]
-  (make-+-parser (-compile parser) options))
+  (make-+-parser (compile-inner parser) options))
 
 
 (defmethod -compile-vector '*
   [[_ parser & {:as options}]]
-  (make-*-parser (-compile parser) options))
+  (make-*-parser (compile-inner parser) options))
 
 
 (defmethod -compile-vector 'join
   [[_ sep parser & {:as options}]]
-  (make-join-parser (-compile sep) (-compile parser) options))
+  (make-join-parser (compile-inner sep) (compile-inner parser) options))
 
 
 (defmethod -compile-vector 'range
@@ -549,7 +615,7 @@
 (defn compile-defs [spec]
   (reduce-kv
    (fn [acc sym parser]
-     (assoc acc sym (-compile parser)))
+     (assoc acc sym (compile-inner parser)))
    {}
    spec))
 
@@ -599,8 +665,8 @@
      (\{ ws \} :return {})
      (\{ [join \, json/keyval] \})]
 
-    test/abc
-    [range [\0 \9] -[\3 \5] -\9]
+    test/int
+    [+ [range [\0 \9]] :tag number :coerce parse-int]
 
     test/foo
     [>
@@ -609,6 +675,10 @@
       [join \, ["xxx" :i? false]]
       [join \, ["yyy" :i? false]]]
      [or "bbb" "ccc"]]})
+
+
+(defn parse-int [chars]
+  (->> chars (apply str) (Integer/parseInt)))
 
 
 (def -defs
