@@ -1,4 +1,5 @@
 (ns parser.try2
+  (:import java.util.ArrayList)
   (:refer-clojure :exclude [compile]))
 
 
@@ -30,26 +31,42 @@
        (cond ~@cond-body))))
 
 
+(defn correct-acc-string [options]
+  (if (get options :string?)
+    (assoc options :acc :string-builder :coerce 'str)
+    options))
+
+
 (defn add-acc-funcs [options]
   (merge
    options
-   (case (get options :acc :vec)
+   (case (get options :acc :vector)
 
-     (sb :sb "sb")
+     (string-builder :string-builder "string-builder")
      {:acc-new
       (fn []
         (new StringBuilder))
       :acc-add
       (fn [^StringBuilder sb x]
-        (.append sb x))}
+        (doto sb
+          (.append x)))}
 
-     (vec :vec "vec")
+     (vector :vector "vector")
      {:acc-new
       (fn []
         [])
       :acc-add
       (fn [acc x]
-        (conj acc x))})))
+        (conj acc x))}
+
+     (array-list :array-list "array-list")
+     {:acc-new
+      (fn []
+        (new ArrayList))
+      :acc-add
+      (fn [^ArrayList arr x]
+        (doto arr
+          (.add x)))})))
 
 
 (def ^:dynamic *definitions* nil)
@@ -130,7 +147,7 @@
     (Success {:as s :keys [data chars]})
     (if skip?
 
-      (assoc :skip? s true)
+      (assoc s :skip? true)
 
       (let [[e data]
             (if coerce
@@ -214,7 +231,7 @@
 ;; GroupParser
 ;;
 
-(defrecord GroupParser [parsers TODO]
+(defrecord GroupParser [parsers acc-new acc-add]
 
   IParser
 
@@ -222,7 +239,7 @@
 
     (loop [i 0
            [parser & parsers] parsers
-           acc []
+           acc (acc-new)
            chars chars]
 
       (if parser
@@ -230,12 +247,12 @@
         (match (parse-inner parser chars)
 
           (Success {:keys [data chars]})
-          (recur (inc i) parsers (conj acc data) chars)
+          (recur (inc i) parsers (acc-add acc data) chars)
 
           (Failure f)
           (let [message
                 (format "Parser %s failed" i)]
-            (failure message (conj acc f))))
+            (failure message (acc-add acc f))))
 
         (success acc chars)))))
 
@@ -243,6 +260,7 @@
 (defn make-group-parser [parsers options]
   (-> options
       (merge {:parsers parsers})
+      (correct-acc-string)
       (add-acc-funcs)
       (map->GroupParser)))
 
@@ -316,6 +334,7 @@
 (defn make-+-parser [parser options]
   (-> options
       (merge {:parser parser})
+      (correct-acc-string)
       (add-acc-funcs)
       (map->+Parser)))
 
@@ -346,6 +365,7 @@
 (defn make-*-parser [parser options]
   (-> options
       (merge {:parser parser})
+      (correct-acc-string)
       (add-acc-funcs)
       (map->*Parser)))
 
@@ -664,7 +684,7 @@
 
     word
     [+ [range [\a \z] [\A \Z] [\0 \9]]
-     :acc sb :coerce str :tag word]
+     :string? true :tag word]
 
     value
     (ws* word ws+ word ws*)})
@@ -678,4 +698,4 @@
   (->> chars (apply str) (Integer/parseInt)))
 
 #_
-(parse -defs 'some/parser "aaaccc")
+(parse -defs 'value "  abc   \t dbc  ")
