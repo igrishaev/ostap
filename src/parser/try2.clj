@@ -163,12 +163,6 @@
       (map->GroupParser)))
 
 
-(defn make-or-parser [parsers options]
-  (-> options
-      (merge {:parsers parsers})
-      (map->OrParser)))
-
-
 ;;
 ;; ?Parser
 ;;
@@ -193,6 +187,62 @@
 
 
 ;;
+;; +Parser
+;;
+
+(defrecord +Parser [parser options]
+
+  IParser
+
+  (-parse [this chars]
+
+    (match (parse-inner parser chars)
+      (Success {:keys [data chars]})
+      (loop [acc [data]
+             chars chars]
+        (match (parse-inner parser chars)
+          (Success {:keys [data chars]})
+          (recur (conj acc data) chars)
+
+          (Failure f)
+          (success acc chars)))
+
+      (Failure f)
+      (failure "+ error: the underlying parser didn't appear at least once"
+               [f]))))
+
+
+(defn make-+-parser [parser options]
+  (-> options
+      (merge {:parser parser})
+      (map->+Parser)))
+
+
+;;
+;; *Parser
+;;
+
+(defrecord *Parser [parser options]
+
+  IParser
+
+  (-parse [this chars]
+    (loop [acc []
+           chars chars]
+      (match (parse-inner parser chars)
+        (Success {:keys [data chars]})
+        (recur (conj acc data) chars)
+        (Failure f)
+        (success acc chars)))))
+
+
+(defn make-*-parser [parser options]
+  (-> options
+      (merge {:parser parser})
+      (map->*Parser)))
+
+
+;;
 ;; OrParser
 ;;
 
@@ -211,6 +261,15 @@
         (failure "All the parsers have failed" "")))))
 
 
+(defn make-or-parser [parsers options]
+  (-> options
+      (merge {:parsers parsers})
+      (map->OrParser)))
+
+
+;;
+;; Symbol compiler
+;;
 
 (extend-protocol IParser
 
@@ -280,6 +339,16 @@
     (make-or-parser (mapv -compile args-req) options)))
 
 
+(defmethod -compile-vector '+
+  [[_ parser & {:as options}]]
+  (make-+-parser (-compile parser) options))
+
+
+(defmethod -compile-vector '*
+  [[_ parser & {:as options}]]
+  (make-*-parser (-compile parser) options))
+
+
 ;;
 ;; Compiler
 ;;
@@ -343,7 +412,13 @@
     some/foo
     [or
      "XXX"
-     some/parser]})
+     some/parser]
+
+    some/test+
+    [+ \a]
+
+    some/test*
+    [* \a]})
 
 
 (def -defs
