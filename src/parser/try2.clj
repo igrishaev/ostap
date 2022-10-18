@@ -2,11 +2,11 @@
   (:refer-clojure :exclude [compile]))
 
 
-(def SKIP ::skip)
+(defrecord Skip [chars])
 
 
-(defn skip? [x]
-  (identical? x SKIP))
+(defn skip [chars]
+  (new Skip chars))
 
 
 (defmacro match
@@ -95,45 +95,56 @@
 (defn parse-inner [{:as parser
                     :keys [tag
                            meta
+                           skip?
                            coerce
                            return]}
                    chars]
 
   (match (-parse parser chars)
 
+    (Skip s)
+    s
+
     (Success {:as s :keys [data chars]})
 
-    (let [[e data]
-          (if coerce
+    (cond
+
+      skip?
+      (skip chars)
+
+      coerce
+      (let [[e data]
             (try
               [nil (coerce data)]
               (catch Throwable e
-                [e nil]))
-            [nil data])]
+                [e nil]))]
+        (if e
+          (failure (format "Coercion error: %s" (ex-message e))
+                   data)
+          (success data chars)))
 
-      (if e
-        (failure (format "Coercion error: %s" (ex-message e))
-                 data)
+      ;; TODO
 
-        (cond-> data
+      :else
+      (cond-> data
 
-          return
-          (as [_]
-            return)
+        return
+        (as [_]
+          return)
 
-          meta
-          (as [x]
-            (if (supports-meta? x)
-              (with-meta x meta)
-              x))
+        meta
+        (as [x]
+          (if (supports-meta? x)
+            (with-meta x meta)
+            x))
 
-          tag
-          (as [x]
-            [tag x])
+        tag
+        (as [x]
+          [tag x])
 
-          :finally
-          (as [x]
-            (success x chars)))))
+        :finally
+        (as [x]
+          (success x chars))))
 
     (Failure f)
     f))
@@ -200,6 +211,9 @@
 
         (match (parse-inner parser chars)
 
+          (Skip {:keys [chars]})
+          (recur (inc i) parsers acc chars)
+
           (Success {:keys [data chars]})
           (recur (inc i) parsers (conj acc data) chars)
 
@@ -250,20 +264,25 @@
 
   (-parse [this chars]
 
-    (match (parse-inner parser chars)
-      (Success {:keys [data chars]})
-      (loop [acc [data]
-             chars chars]
-        (match (parse-inner parser chars)
-          (Success {:keys [data chars]})
-          (recur (conj acc data) chars)
+    (let [[acc-new acc-add]
+          (acc-funcs (get this :acc :vec))]
 
-          (Failure f)
-          (success acc chars)))
+      (match (parse-inner parser chars)
+        (Success {:keys [data chars]})
 
-      (Failure f)
-      (failure "+ error: the underlying parser didn't appear at least once"
-               [f]))))
+        (loop [acc (acc-add (acc-new) data)
+               chars chars]
+
+          (match (parse-inner parser chars)
+            (Success {:keys [data chars]})
+            (recur (acc-add acc data) chars)
+
+            (Failure f)
+            (success acc chars)))
+
+        (Failure f)
+        (failure "+ error: the underlying parser didn't appear at least once"
+                 [f])))))
 
 
 (defn make-+-parser [parser options]
@@ -276,18 +295,38 @@
 ;; *Parser
 ;;
 
+(defn acc-funcs [acc-type]
+  (case acc-type
+    (sb :sb "sb")
+    [(fn []
+       (new StringBuilder))
+     (fn [^StringBuilder sb x]
+       (.append sb x))]
+    (vec :vec "vec")
+    [(fn []
+       [])
+     (fn [acc x]
+       (conj acc x))]))
+
+
 (defrecord *Parser [parser]
 
   IParser
 
   (-parse [this chars]
-    (loop [acc []
-           chars chars]
-      (match (parse-inner parser chars)
-        (Success {:keys [data chars]})
-        (recur (conj acc data) chars)
-        (Failure f)
-        (success acc chars)))))
+
+    (let [[acc-new acc-add]
+          (acc-funcs (get this :acc :vec))]
+
+      (loop [acc (acc-new)
+             chars chars]
+        (match (parse-inner parser chars)
+          (Skip {:keys [chars]})
+          (recur acc chars)
+          (Success {:keys [data chars]})
+          (recur (acc-add acc data) chars)
+          (Failure f)
+          (success acc chars))))))
 
 
 (defn make-*-parser [parser options]
@@ -624,6 +663,10 @@
   (binding [*definitions* defs]
 
     (match (parse-inner sym chars)
+
+      (Skip _)
+      nil
+
       (Success {:keys [data chars]})
       data
 
@@ -633,56 +676,27 @@
 
 
 (def -spec
-  '{char/aaa
-    ["aaa" :i? false]
+  '{ws*
+    [* [range "\r\n\t "] :skip? true]
 
-    char/bbb
-    ["BBB" :i? true]
+    ws+
+    [+ [range "\r\n\t "] :skip? true]
 
-    char/ccc
-    "ccc"
+    word
+    [+ [range [\a \z] [\A \Z] [\0 \9]] :acc sb :coerce str]
 
-    some/parser
-    [> char/aaa [? char/bbb] char/ccc]
+    value
+    (ws* word ws+ word)
 
-    some/foo
-    [or
-     "XXX"
-     some/parser]
-
-    some/test+
-    [+ \a]
-
-
-    some/test*
-    [* \a]
-
-    test/join
-    [join \, ["xxx" :i? false]]
-
-    test/foo2
-    [or
-     (\{ ws \} :return {})
-     (\{ [join \, json/keyval] \})]
-
-    test/int
-    [+ [range [\0 \9]] :tag number :coerce parse-int]
-
-    test/foo
-    [>
-     "aaa"
-     [or
-      [join \, ["xxx" :i? false]]
-      [join \, ["yyy" :i? false]]]
-     [or "bbb" "ccc"]]})
-
-
-(defn parse-int [chars]
-  (->> chars (apply str) (Integer/parseInt)))
+    })
 
 
 (def -defs
   (compile-defs -spec))
+
+
+(defn parse-int [chars]
+  (->> chars (apply str) (Integer/parseInt)))
 
 #_
 (parse -defs 'some/parser "aaaccc")
