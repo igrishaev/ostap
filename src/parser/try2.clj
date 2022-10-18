@@ -163,6 +163,12 @@
       (map->GroupParser)))
 
 
+(defn make-or-parser [parsers options]
+  (-> options
+      (merge {:parsers parsers})
+      (map->OrParser)))
+
+
 ;;
 ;; ?Parser
 ;;
@@ -197,27 +203,12 @@
   (-parse [this chars]
     (loop [[parser & parsers] parsers]
       (if parser
-        1
-
-        )
-
-      )
-
-    #_
-    (reduce
-     (fn [_ parser]
-
-       )
-     nil
-     parsers)
-
-
-    #_
-    (match (parse-inner parser chars)
-      (Success s)
-      s
-      (Failure f)
-      (success SKIP chars))))
+        (match (parse-inner parser chars)
+          (Success s)
+          s
+          (Failure f)
+          (recur parsers))
+        (failure "All the parsers have failed" "")))))
 
 
 
@@ -277,13 +268,21 @@
   (make-?-parser (-compile parser) options))
 
 
+(defmethod -compile-vector 'or
+  [[_ & args]]
+
+  (let [[args-req args-opt]
+        (split-args args)
+
+        options
+        (apply hash-map args-opt)]
+
+    (make-or-parser (mapv -compile args-req) options)))
+
+
 ;;
 ;; Compiler
 ;;
-
-
-
-
 
 (extend-protocol ICompiler
 
@@ -342,7 +341,9 @@
     [> char/aaa [? char/bbb] char/ccc]
 
     some/foo
-    [? some/parser]})
+    [or
+     "XXX"
+     some/parser]})
 
 
 (def -defs
