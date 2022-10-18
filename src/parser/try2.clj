@@ -190,7 +190,7 @@
 ;; +Parser
 ;;
 
-(defrecord +Parser [parser options]
+(defrecord +Parser [parser]
 
   IParser
 
@@ -222,7 +222,7 @@
 ;; *Parser
 ;;
 
-(defrecord *Parser [parser options]
+(defrecord *Parser [parser]
 
   IParser
 
@@ -246,7 +246,7 @@
 ;; OrParser
 ;;
 
-(defrecord OrParser [parsers options]
+(defrecord OrParser [parsers]
 
   IParser
 
@@ -265,6 +265,43 @@
   (-> options
       (merge {:parsers parsers})
       (map->OrParser)))
+
+
+;;
+;; JoinParser
+;;
+
+(defrecord JoinParser [sep parser]
+
+  IParser
+
+  (-parse [_ chars]
+
+    (loop [phase? true
+           acc []]
+
+      #_
+      (let [p (if phase? parser sep)]
+
+        (println phase? acc p)
+
+        (match (parse-inner p chars)
+          (Success {:keys [data chars]})
+          (if phase?
+            (recur (not phase?) (conj acc data))
+            (recur (not phase?) acc))
+
+          (Failure f)
+          (if phase?
+            (success acc chars)
+            (failure "Failed to parse a separator" (conj acc f))))))))
+
+
+(defn make-join-parser [sep parser options]
+  (-> options
+      (merge {:sep sep
+              :parser parser})
+      (map->JoinParser)))
 
 
 ;;
@@ -349,6 +386,11 @@
   (make-*-parser (-compile parser) options))
 
 
+(defmethod -compile-vector 'join
+  [[_ sep parser & {:as options}]]
+  (make-join-parser (-compile sep) (-compile parser) options))
+
+
 ;;
 ;; Compiler
 ;;
@@ -418,7 +460,12 @@
     [+ \a]
 
     some/test*
-    [* \a]})
+    [* \a]
+
+    test/join
+    [join \, ["xxx" :i? false]]
+
+    })
 
 
 (def -defs
