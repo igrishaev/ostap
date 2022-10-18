@@ -20,8 +20,10 @@
          (fn [acc [[Record bind] body]]
            (-> acc
                (conj `(instance? ~Record ~x-sym))
-               (conj `(let [~bind ~x-sym]
-                        ~body))))
+               (conj (if bind
+                       `(let [~bind ~x-sym]
+                          ~body)
+                       `~body))))
          []
          (partition 2 pattern-body))
 
@@ -29,7 +31,7 @@
         cond-body
         (-> cond-body
             (conj :else)
-            (conj `(throw (ex-info "No matching pattern found" {}))))]
+            (conj `(throw (ex-info "No matching pattern found" {:x ~x-sym}))))]
 
     `(let [~x-sym ~x]
        (cond ~@cond-body))))
@@ -106,45 +108,40 @@
     s
 
     (Success {:as s :keys [data chars]})
-
-    (cond
-
-      skip?
+    (if skip?
       (skip chars)
 
-      coerce
       (let [[e data]
-            (try
-              [nil (coerce data)]
-              (catch Throwable e
-                [e nil]))]
+            (if coerce
+              (try
+                [nil (coerce data)]
+                (catch Throwable e
+                  [e data]))
+              [nil data])]
+
         (if e
           (failure (format "Coercion error: %s" (ex-message e))
                    data)
-          (success data chars)))
 
-      ;; TODO
+          (cond-> data
 
-      :else
-      (cond-> data
+            return
+            (as [_]
+              return)
 
-        return
-        (as [_]
-          return)
+            meta
+            (as [x]
+              (if (supports-meta? x)
+                (with-meta x meta)
+                x))
 
-        meta
-        (as [x]
-          (if (supports-meta? x)
-            (with-meta x meta)
-            x))
+            tag
+            (as [x]
+              [tag x])
 
-        tag
-        (as [x]
-          [tag x])
-
-        :finally
-        (as [x]
-          (success x chars))))
+            :finally
+            (as [x]
+              (success x chars))))))
 
     (Failure f)
     f))
@@ -268,14 +265,17 @@
           (acc-funcs (get this :acc :vec))]
 
       (match (parse-inner parser chars)
-        (Success {:keys [data chars]})
 
+        (Success {:keys [data chars]})
         (loop [acc (acc-add (acc-new) data)
                chars chars]
 
           (match (parse-inner parser chars)
             (Success {:keys [data chars]})
             (recur (acc-add acc data) chars)
+
+            (Skip {:keys [chars]})
+            (recur acc chars)
 
             (Failure f)
             (success acc chars)))
@@ -683,12 +683,11 @@
     [+ [range "\r\n\t "] :skip? true]
 
     word
-    [+ [range [\a \z] [\A \Z] [\0 \9]] :acc sb :coerce str]
+    [+ [range [\a \z] [\A \Z] [\0 \9]]
+     :acc sb :coerce str :tag word]
 
     value
-    (ws* word ws+ word)
-
-    })
+    (ws* word ws+ word ws*)})
 
 
 (def -defs
