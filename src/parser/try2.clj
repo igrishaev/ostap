@@ -302,6 +302,104 @@
 
 
 ;;
+;; RangeParser
+;;
+
+(def conj-set
+  (fnil conj #{}))
+
+
+(def conj-into
+  (fnil into #{}))
+
+
+(defn collect-range-args [args]
+
+  (loop [acc nil
+         pos? true
+         args args]
+
+    (let [[arg & args] args]
+
+      (cond
+
+        (nil? arg)
+        acc
+
+        (= '- arg)
+        (recur acc false args)
+
+        (char? arg)
+        (recur (update-in acc [pos? :chars] conj-set arg) true args)
+
+        (string? arg)
+        (recur (update-in acc [pos? :chars] conj-into (seq arg)) true args)
+
+        (vector? arg)
+        (recur (update-in acc [pos? :ranges] conj-set arg) true args)
+
+        :else
+        (recur acc true args)))))
+
+
+(defn char-in-range? [c [c-min c-max]]
+  (<= (int c-min) (int c) (int c-max)))
+
+
+(defrecord RangeParser [chars-neg
+                        ranges-neg
+                        chars-pos
+                        ranges-pos]
+
+  IParser
+
+  (-parse [this chars]
+
+    (if-let [c (first chars)]
+
+      (let [allowed?
+            (if (or (contains? chars-neg c)
+                    (when ranges-neg
+                      (some (partial char-in-range? c) ranges-neg)))
+              false
+              (if (or chars-pos ranges-pos)
+                (or (contains? chars-pos c)
+                    (when ranges-pos
+                      (some (partial char-in-range? c) ranges-pos)))
+                true))]
+
+        (if allowed?
+          (success c (rest chars))
+          (let [message
+                (with-out-str
+                  (printf "Character %s is not allowed for this parser. " c)
+                  (when (or chars-pos ranges-pos)
+                    (print "The allowed characters are ")
+                    (doseq [c chars-pos]
+                      (print c))
+                    (doseq [[c-min c-max] ranges-pos]
+                      (printf "[%s-%s]" c-min c-max)))
+                  (print \.)
+                  (when (or chars-neg ranges-neg)
+                    (print "The disallowed characters are ")
+                    (doseq [c chars-neg]
+                      (print c))
+                    (doseq [[c-min c-max] ranges-neg]
+                      (printf "[%s-%s]" c-min c-max))))]
+            (failure message c))))
+      (failure "EOF reached" ""))))
+
+
+(defn make-range-parser [chars-pos chars-neg ranges-pos ranges-neg options]
+  (-> options
+      (merge {:chars-pos chars-pos
+              :chars-neg chars-neg
+              :ranges-pos ranges-pos
+              :ranges-neg ranges-neg})
+      (map->RangeParser)))
+
+
+;;
 ;; Symbol compiler
 ;;
 
@@ -345,15 +443,17 @@
   (make-string-parser (str ch) options))
 
 
-(defmethod -compile-vector '>
-  [[_ & args]]
+(defn -compile-group-impl [args]
   (let [[args-req args-opt]
         (split-args args)
-
         options
         (apply hash-map args-opt)]
-
     (make-group-parser (mapv -compile args-req) options)))
+
+
+(defmethod -compile-vector '>
+  [[_ & args]]
+  (-compile-group-impl args))
 
 
 (defmethod -compile-vector '?
@@ -388,6 +488,33 @@
   (make-join-parser (-compile sep) (-compile parser) options))
 
 
+(defmethod -compile-vector 'range
+  [[_ & args]]
+
+  (let [[args-req args-opt]
+        (split-args args)
+
+        options
+        (apply hash-map args-opt)
+
+        args-map
+        (collect-range-args args-req)
+
+        chars-pos
+        (some-> args-map (get true) :chars not-empty)
+
+        chars-neg
+        (some-> args-map (get false) :chars not-empty)
+
+        ranges-pos
+        (some-> args-map (get true) :ranges not-empty)
+
+        ranges-neg
+        (some-> args-map (get false) :ranges not-empty)]
+
+    (make-range-parser chars-pos chars-neg ranges-pos ranges-neg options)))
+
+
 ;;
 ;; Compiler
 ;;
@@ -408,6 +535,10 @@
 
   (-compile [this]
     this)
+
+  clojure.lang.PersistentList
+  (-compile [args]
+    (-compile-group-impl args))
 
   clojure.lang.PersistentVector
 
@@ -456,11 +587,20 @@
     some/test+
     [+ \a]
 
+
     some/test*
     [* \a]
 
     test/join
     [join \, ["xxx" :i? false]]
+
+    test/foo2
+    [or
+     (\{ ws \} :return {})
+     (\{ [join \, json/keyval] \})]
+
+    test/abc
+    [range [\0 \9] -[\3 \5] -\9]
 
     test/foo
     [>
