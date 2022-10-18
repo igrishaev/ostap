@@ -214,7 +214,7 @@
 ;; GroupParser
 ;;
 
-(defrecord GroupParser [parsers]
+(defrecord GroupParser [parsers TODO]
 
   IParser
 
@@ -243,13 +243,26 @@
 (defn make-group-parser [parsers options]
   (-> options
       (merge {:parsers parsers})
+      (add-acc-funcs)
       (map->GroupParser)))
+
+
+(defn -compile-group-impl [args]
+  (let [[args-req args-opt]
+        (split-args args)
+        options
+        (apply hash-map args-opt)]
+    (make-group-parser (mapv compile-inner args-req) options)))
+
+
+(defmethod -compile-vector 'group
+  [[_ & args]]
+  (-compile-group-impl args))
 
 
 ;;
 ;; ?Parser
 ;;
-
 
 (defrecord ?Parser [parser]
 
@@ -265,6 +278,11 @@
   (-> options
       (merge {:parser parser})
       (map->?Parser)))
+
+
+(defmethod -compile-vector '?
+  [[_ parser & {:as options}]]
+  (make-?-parser (compile-inner parser) options))
 
 
 ;;
@@ -571,7 +589,6 @@
 ;; MM-compiler
 ;;
 
-
 (defn split-args [form]
   (split-with (complement keyword?) form))
 
@@ -584,24 +601,6 @@
 (defmethod -compile-vector :char
   [[ch & {:as options}]]
   (make-string-parser (str ch) options))
-
-
-(defn -compile-group-impl [args]
-  (let [[args-req args-opt]
-        (split-args args)
-        options
-        (apply hash-map args-opt)]
-    (make-group-parser (mapv compile-inner args-req) options)))
-
-
-(defmethod -compile-vector 'group
-  [[_ & args]]
-  (-compile-group-impl args))
-
-
-(defmethod -compile-vector '?
-  [[_ parser & {:as options}]]
-  (make-?-parser (compile-inner parser) options))
 
 
 ;;
