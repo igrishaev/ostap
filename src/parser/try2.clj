@@ -277,24 +277,21 @@
 
   (-parse [_ chars]
 
-    (loop [phase? true
-           acc []]
-
-      #_
-      (let [p (if phase? parser sep)]
-
-        (println phase? acc p)
-
-        (match (parse-inner p chars)
+    (match (parse-inner parser chars)
+      (Success {:keys [data chars]})
+      (loop [acc [data]
+             chars chars]
+        (match (parse-inner sep chars)
           (Success {:keys [data chars]})
-          (if phase?
-            (recur (not phase?) (conj acc data))
-            (recur (not phase?) acc))
-
+          (match (parse-inner parser chars)
+            (Success {:keys [data chars]})
+            (recur (conj acc data) chars)
+            (Failure f)
+            (failure "Join error: parser has failed after separator" (conj acc f)))
           (Failure f)
-          (if phase?
-            (success acc chars)
-            (failure "Failed to parse a separator" (conj acc f))))))))
+          (success acc chars)))
+      (Failure f)
+      (failure "Join error: the first item is missing" [f]))))
 
 
 (defn make-join-parser [sep parser options]
@@ -465,7 +462,13 @@
     test/join
     [join \, ["xxx" :i? false]]
 
-    })
+    test/foo
+    [>
+     "aaa"
+     [or
+      [join \, ["xxx" :i? false]]
+      [join \, ["yyy" :i? false]]]
+     [or "bbb" "ccc"]]})
 
 
 (def -defs
