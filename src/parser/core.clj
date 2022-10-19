@@ -1,12 +1,117 @@
 (ns parser.core
   (:refer-clojure :exclude [compile])
-  (:require
-   [clojure.string :as str]
-   [clojure.java.io :as io])
-  (:import
-   java.io.Reader
-   java.util.Stack))
+  (:import java.util.ArrayList
+           java.io.Reader))
 
+
+(defprotocol ICompiler
+  (-compile [this]))
+
+
+(defn resolve-func [sym]
+  (or (some-> sym resolve deref)
+      (throw (ex-info "Function not found" {:sym sym}))))
+
+
+(defn compile-inner [x]
+  (let [c (-compile x)]
+    (cond-> c
+      (:coerce c)
+      (update :coerce resolve-func))))
+
+
+(defn split-args [form]
+  (split-with (complement keyword?) form))
+
+
+(defmacro match
+  {:style/indent 1}
+  [x & pattern-body]
+  (let [x-sym
+        (gensym "x")
+
+        cond-body
+        (reduce
+         (fn [acc [[Record bind] body]]
+           (-> acc
+               (conj `(instance? ~Record ~x-sym))
+               (conj (if bind
+                       `(let [~bind ~x-sym]
+                          ~body)
+                       `~body))))
+         []
+         (partition 2 pattern-body))
+
+
+        cond-body
+        (-> cond-body
+            (conj :else)
+            (conj `(throw (ex-info "No matching pattern found" {:x ~x-sym}))))]
+
+    `(let [~x-sym ~x]
+       (cond ~@cond-body))))
+
+
+(defn correct-acc-string [options]
+  (if (get options :string?)
+    (assoc options :acc :string-builder :coerce 'str)
+    options))
+
+
+(defn add-acc-funcs [options]
+  (merge
+   options
+   (case (get options :acc :vector)
+
+     (string-builder :string-builder "string-builder")
+     {:acc-new
+      (fn []
+        (new StringBuilder))
+      :acc-add
+      (fn [^StringBuilder sb x]
+        (doto sb
+          (.append x)))}
+
+     (map :map "map")
+     {:acc-new
+      (fn []
+        {})
+      :acc-add
+      (fn [acc pair]
+        (conj acc pair))}
+
+     (vector :vector "vector")
+     {:acc-new
+      (fn []
+        [])
+      :acc-add
+      (fn [acc x]
+        (conj acc x))}
+
+     (array-list :array-list "array-list")
+     {:acc-new
+      (fn []
+        (new ArrayList))
+      :acc-add
+      (fn [^ArrayList arr x]
+        (doto arr
+          (.add x)))})))
+
+
+(def ^:dynamic *definitions* nil)
+
+
+(defmulti -compile-vector
+  (fn [[lead]]
+    (cond
+      (string? lead) :string
+      (char? lead)   :char
+      :else          lead)))
+
+
+;;
+;; Failure
+;;
 
 (defrecord Failure [message state]
 
@@ -14,6 +119,7 @@
 
   (toString [this]
     (format "<<%s>>" message)))
+
 
 (defn failure [message state]
   (new Failure message state))
@@ -23,564 +129,572 @@
   (instance? Failure x))
 
 
-(def EOF ::eof)
+;;
+;; Success
+;;
 
-(defn eof? [x]
-  (identical? x EOF))
-
-(def SKIP ::skip)
-
-(defn skip? [x]
-  (identical? x SKIP))
+(defrecord Success [data chars skip?])
 
 
-(defn make-acc-funcs [acc-type]
-  (case acc-type
-
-    :vec
-    [(constantly [])
-     (fn [coll x]
-       (if (skip? x)
-         coll
-         (conj coll x)))
-     identity]
-
-    :str
-    [(fn []
-       (new StringBuilder))
-
-     (fn [^StringBuilder sb x]
-       (if (skip? x)
-         sb
-         (.append sb x)))
-
-     str]))
-
-(defn split-args [form]
-  (split-with (complement keyword?) form))
+(defn success
+  ([data chars]
+   (new Success data chars false))
+  ([data chars skip?]
+   (new Success data chars skip?)))
 
 
-(defprotocol ISource
-  (read-char [this])
-  (unread-char [this c])
-  (unread-string [this string]))
+(defn success? [x]
+  (instance? Success x))
 
 
-(deftype Source [^Reader in
-                 ^Stack stack]
+;;
+;; Parser
+;;
 
-  ISource
-
-  (read-char [this]
-    (if (.empty stack)
-      (let [code (.read in)]
-        (if (= -1 code)
-          EOF
-          (char code)))
-      (.pop stack)))
-
-  (unread-char [this c]
-    (.push stack c))
-
-  (unread-string [this string]
-    (doseq [c (str/reverse string)]
-      (unread-char this c))))
-
-
-(defn make-source [in]
-  (new Source in (new Stack)))
-
-
-(defn make-source-from-string [^String string]
-  (-> string
-      .getBytes
-      io/reader
-      make-source))
-
-
-(defn compile-dispatch [[lead & _]]
-  (cond
-    (string? lead) :string
-    (char? lead) :char
-    :else lead))
-
-
-(defmulti compile compile-dispatch)
+(defprotocol IParser
+  (-parse [this chars]))
 
 
 (defn supports-meta? [x]
   (instance? clojure.lang.IMeta x))
 
 
-(defn parse [{:as parser
-              :keys [fn-parse
-                     fn-coerce
-                     meta
-                     tag
-                     skip?]}
-             source]
-
-  (let [result
-        (fn-parse parser source)]
-
-    (cond
-
-      (failure? result)
-      result
-
-      skip?
-      SKIP
-
-      :else
-      (let [result
-            (if fn-coerce
-              (fn-coerce result)
-              result)
-
-            result
-            (if (and meta (supports-meta? result))
-              (with-meta result meta)
-              result)
-
-            result
-            (if tag
-              ^:tag [tag result]
-              result)]
-
-        result))))
+(defmacro as
+  {:style/indent 1}
+  [x [bind] & body]
+  `(let [~bind ~x]
+     ~@body))
 
 
-(defn string-builder? [x]
-  (instance? StringBuilder x))
+(defn parse-inner- [{:as parser
+                     :keys [tag
+                            type
+                            meta
+                            skip?
+                            coerce
+                            return]
+                     :or {return ::empty}}
+                    chars]
+
+  (match (-parse parser chars)
+
+    (Success {:as s :keys [data chars]})
+    (if skip?
+
+      (success data chars true)
+
+      (let [[e data]
+            (if coerce
+              (try
+                [nil (coerce data)]
+                (catch Throwable e
+                  [e data]))
+              [nil data])]
+
+        (if e
+          (failure (format "Coercion error: %s" (ex-message e))
+                   data)
+
+          (cond-> data
+
+            (not= return ::empty)
+            (as [_]
+              return)
+
+            meta
+            (as [x]
+              (if (supports-meta? x)
+                (with-meta x meta)
+                x))
+
+            tag
+            (as [x]
+              [tag x])
+
+            :finally
+            (as [x]
+              (success x chars))))))
+
+    (Failure f)
+    f))
+
+
+(defn parse-inner [parser chars]
+  (if (symbol? parser)
+    (if-let [parser (get *definitions* parser)]
+      (parse-inner- parser chars)
+      (failure (format "No definition found for parser %s" parser) nil))
+    (parse-inner- parser chars)))
+
+
+;;
+;; StringParser
+;;
+
+(defrecord StringParser
+    [string i?]
+
+    IParser
+
+    (-parse [_ chars]
+
+      (loop [sb (new StringBuilder)
+             [ch1 & string] string
+             [ch2 & chars] chars]
+
+        (cond
+
+          (nil? ch1)
+          (success (str sb) (cons ch2 chars))
+
+          (nil? ch2)
+          (failure "EOF reached" (str sb))
+
+          (if i?
+            (= (Character/toLowerCase ^Character ch1)
+               (Character/toLowerCase ^Character ch2))
+            (= ch1 ch2))
+          (recur (.append sb ch2) string chars)
+
+          :else
+          (failure
+           (format "Expected %s but got %s, i?: %s"
+                   ch1 ch2 i?)
+           (str sb))))))
 
 
 (defn make-string-parser [string options]
-  (merge
-   options
-   {:type :string
-    :string string
-    :fn-parse
-    (fn [{:keys [string
-                 i?]}
-         ^Source source]
-
-      (let [result
-            (reduce
-             (fn [^StringBuilder sb ^Character char-1]
-
-               (let [char-2 (read-char source)]
-
-                 (if (eof? char-2)
-                   (reduced (failure "EOF reached" (str sb)))
-
-                   (if (if i?
-                         (= (Character/toLowerCase ^Character char-1)
-                            (Character/toLowerCase ^Character char-2))
-                         (= char-1 char-2))
-
-                     (.append sb char-2)
-
-                     (do
-                       (unread-char source char-2)
-                       (unread-string source (str sb))
-
-                       (reduced (failure
-                                 (format "String parsing error: expected %s but got %s, i? flag: %s"
-                                         char-1 char-2 i?)
-                                 (str sb))))))))
-
-             (new StringBuilder)
-             string)]
-
-        (if (string-builder? result)
-          (str result)
-          result)))}))
+  (-> options
+      (merge {:type 'string :string string})
+      (map->StringParser)))
 
 
-(defn enumerate [coll]
-  (map-indexed vector coll))
+;;
+;; GroupParser
+;;
+
+(defrecord GroupParser [parsers acc-new acc-add]
+
+  IParser
+
+  (-parse [this chars]
+
+    (loop [i 0
+           [parser & parsers] parsers
+           acc (acc-new)
+           chars chars]
+
+      (if parser
+
+        (match (parse-inner parser chars)
+
+          (Success {:keys [data chars skip?]})
+          (if skip?
+            (recur (inc i) parsers acc chars)
+            (recur (inc i) parsers (acc-add acc data) chars))
+
+          (Failure f)
+          (let [message
+                (format "Parser %s failed" i)]
+            (failure message (acc-add acc f))))
+
+        (success acc chars)))))
 
 
-(defn make-tuple-parser [parsers options]
-
-  (let [[acc-new
-         acc-add
-         acc-fin]
-        (make-acc-funcs (get options :acc :vec))]
-
-    (merge
-     options
-     {:type :tuple
-      :parsers parsers
-      :fn-parse
-      (fn [{:keys [parsers]} source]
-
-        (loop [i 0
-               parsers parsers
-               acc (acc-new)]
-
-          (if-let [parser (first parsers)]
-
-            (let [result
-                  (parse parser source)
-
-                  acc
-                  (acc-add acc result)]
-
-              (if (failure? result)
-
-                (let [message
-                      (format "Error in tuple parser %s" i)]
-                  (failure message (acc-fin acc)))
-
-                (recur (inc i) (next parsers) acc)))
-
-            (acc-fin acc))))})))
+(defn make-group-parser [parsers options]
+  (-> options
+      (merge {:type 'group :parsers parsers})
+      (correct-acc-string)
+      (add-acc-funcs)
+      (map->GroupParser)))
 
 
-(defn make-or-parser [parsers options]
-  {:pre [(seq parsers)]}
-  (merge
-   options
-   {:type :or
-    :parsers parsers
-    :fn-parse
-    (fn [{:keys [parsers]} source]
-      (reduce
-       (fn [_ parser]
-         (let [result
-               (parse parser source)]
-           (if (failure? result)
-             result
-             (reduced result))))
-       nil
-       parsers))}))
+(defn -compile-group-impl [args]
+  (let [[args-req args-opt]
+        (split-args args)
+        options
+        (apply hash-map args-opt)]
+    (make-group-parser (mapv compile-inner args-req) options)))
+
+
+(defmethod -compile-vector 'group
+  [[_ & args]]
+  (-compile-group-impl args))
+
+
+;;
+;; ?Parser
+;;
+
+(defrecord ?Parser [parser]
+
+  IParser
+
+  (-parse [this chars]
+    (match (parse-inner parser chars)
+      (Success s) s
+      (Failure f) (success nil chars))))
 
 
 (defn make-?-parser [parser options]
-  (merge
-   options
-   {:type :?
-    :parser parser
-    :fn-parse
-    (fn [{:keys [parser]} source]
-      (let [result
-            (parse parser source)]
-        (if (failure? result)
-          SKIP
-          result)))}))
+  (-> options
+      (merge {:type '? :parser parser})
+      (map->?Parser)))
+
+
+(defmethod -compile-vector '?
+  [[_ parser & {:as options}]]
+  (make-?-parser (compile-inner parser) options))
+
+
+;;
+;; +Parser
+;;
+
+
+(defrecord +Parser [parser acc-new acc-add]
+
+  IParser
+
+  (-parse [this chars]
+    (match (parse-inner parser chars)
+
+      (Success {:keys [data chars]})
+      (loop [acc (acc-add (acc-new) data)
+             chars chars]
+
+        (match (parse-inner parser chars)
+          (Success {:keys [data chars skip?]})
+          (if skip?
+            (recur acc chars)
+            (recur (acc-add acc data) chars))
+
+          (Failure f)
+          (success acc chars)))
+
+      (Failure f)
+      (failure "+ error: the underlying parser didn't appear at least once"
+               [f]))))
 
 
 (defn make-+-parser [parser options]
+  (-> options
+      (merge {:type '+ :parser parser})
+      (correct-acc-string)
+      (add-acc-funcs)
+      (map->+Parser)))
 
-  (let [[acc-new
-         acc-add
-         acc-fin]
-        (make-acc-funcs (get options :acc :vec))]
 
-    (merge
-     options
-     {:type :+
-      :parser parser
-      :fn-parse
-      (fn [{:keys [parser]} source]
+(defmethod -compile-vector '+
+  [[_ parser & {:as options}]]
+  (make-+-parser (compile-inner parser) options))
 
-        (let [acc
-              (acc-new)
 
-              result-first
-              (parse parser source)
+;;
+;; *Parser
+;;
 
-              state
-              (acc-add acc result-first)]
+(defrecord *Parser [parser acc-new acc-add]
 
-          (if (failure? result-first)
+  IParser
 
-            (failure "+ error: the underlying parser didn't appear at least once"
-                     (acc-fin state))
-
-            (loop [acc state]
-              (let [result
-                    (parse parser source)]
-
-                (if (failure? result)
-                  (acc-fin acc)
-                  (recur (acc-add acc result-first))))))))})))
+  (-parse [this chars]
+    (loop [acc (acc-new)
+           chars chars]
+      (match (parse-inner parser chars)
+        (Success {:keys [data chars skip?]})
+        (if skip?
+          (recur acc chars)
+          (recur (acc-add acc data) chars))
+        (Failure f)
+        (success acc chars)))))
 
 
 (defn make-*-parser [parser options]
-
-  (let [[acc-new
-         acc-add
-         acc-fin]
-        (make-acc-funcs (get options :acc :vec))]
-
-    (merge
-     options
-     {:type :*
-      :parser parser
-      :fn-parse
-      (fn [{:keys [parser]} source]
-
-        (let [acc
-              (acc-new)
-
-              result-first
-              (parse parser source)
-
-              state
-              (acc-add acc result-first)]
-
-          (if (failure? result-first)
-            SKIP
-            (loop [acc state]
-              (let [result
-                    (parse parser source)]
-                (if (failure? result)
-                  (acc-fin acc)
-                  (recur (acc-add acc result-first))))))))})))
+  (-> options
+      (merge {:type '* :parser parser})
+      (correct-acc-string)
+      (add-acc-funcs)
+      (map->*Parser)))
 
 
-;; ;; times
-;; [times 4 \a]
-;; [times [3 6] \a]
-
-;; [times 3]
-;; [times [2]]
-;; [times [2 4]]
-
-
-(defn make-times-parser [times parser options]
-
-  (let [[acc-new
-         acc-add
-         acc-fin]
-        (make-acc-funcs (get options :acc :vec))
-
-        [times-min times-max]
-        (cond
-          (int? times)
-          [times times]
-          (vector? times)
-          times
-          :else
-          (throw (ex-info "Wrong times argument" {:times times})))]
-
-    (merge
-     options
-     {:type :times
-      :parser parser
-      :times-min times-min
-      :times-max times-max
-      :fn-parse
-      (fn [_ source]
-
-        #_
-        (loop [n 0
-               acc (acc-new)]
-
-          (let [result
-                (parse parser source)]
-
-            (if (failure? result)
-
-              yes
-
-              (if (= n (if (nil? times-max)
-                         times-min
-                         times-max))
-
-                finish
-                next)))))})))
-
-
-(defmethod compile :times
-  [[_ times parser & {:as options}]]
-  (make-times-parser times (compile parser) options))
-
-
-(defmethod compile :string
-  [[string & {:as options}]]
-  (make-string-parser string options))
-
-
-(defmethod compile :char
-  [[c & {:as options}]]
-  (make-string-parser (str c) options))
-
-
-(defmethod compile 'tuple
-  [[_ parsers & {:as options}]]
-  (make-tuple-parser (mapv compile parsers) options))
-
-
-(defmethod compile 'or
-  [[_ parsers & {:as options}]]
-  (make-or-parser (mapv compile parsers) options))
-
-
-(defmethod compile '?
+(defmethod -compile-vector '*
   [[_ parser & {:as options}]]
-  (make-?-parser (compile parser) options))
+  (make-*-parser (compile-inner parser) options))
 
 
-(defmethod compile '+
-  [[_ parser & {:as options}]]
-  (make-+-parser (compile parser) options))
+;;
+;; OrParser
+;;
+
+(defrecord OrParser [parsers]
+
+  IParser
+
+  (-parse [this chars]
+    (loop [[parser & parsers] parsers]
+      (if parser
+        (match (parse-inner parser chars)
+          (Success s)
+          s
+          (Failure f)
+          (recur parsers))
+        (failure "All the parsers have failed" "")))))
 
 
-(defmethod compile '*
-  [[_ parser & {:as options}]]
-  (make-*-parser (compile parser) options))
+(defn make-or-parser [parsers options]
+  (-> options
+      (merge {:type 'or :parsers parsers})
+      (map->OrParser)))
 
 
-(defmethod compile 'times
-  [[_ n parser & {:as options}]]
-  (make-times-parser n (compile parser) options))
+(defmethod -compile-vector 'or
+  [[_ & args]]
 
+  (let [[args-req args-opt]
+        (split-args args)
+
+        options
+        (apply hash-map args-opt)]
+
+    (make-or-parser (mapv compile-inner args-req) options)))
+
+
+;;
+;; JoinParser
+;;
+
+(defrecord JoinParser [sep parser acc-new acc-add]
+
+  IParser
+
+  (-parse [_ chars]
+
+    (match (parse-inner parser chars)
+      (Success {:keys [data chars]})
+      (loop [acc (acc-add (acc-new) data)
+             chars chars]
+        (match (parse-inner sep chars)
+          (Success {:keys [data chars]})
+          (match (parse-inner parser chars)
+            (Success {:keys [data chars]})
+            (recur (acc-add acc data) chars)
+            (Failure f)
+            (failure "Join error: parser has failed after separator" (conj acc f)))
+          (Failure f)
+          (success acc chars)))
+      (Failure f)
+      (failure "Join error: the first item is missing" [f]))))
+
+
+(defn make-join-parser [sep parser options]
+  (-> options
+      (merge {:sep sep
+              :type 'join
+              :parser parser})
+      (correct-acc-string)
+      (add-acc-funcs)
+      (map->JoinParser)))
+
+
+(defmethod -compile-vector 'join
+  [[_ sep parser & {:as options}]]
+  (make-join-parser (compile-inner sep) (compile-inner parser) options))
+
+
+;;
+;; RangeParser
+;;
+
+(def conj-set
+  (fnil conj #{}))
+
+
+(def conj-into
+  (fnil into #{}))
 
 
 (defn collect-range-args [args]
-  (reduce
-   (fn [acc arg]
-     (cond
 
-       (char? arg)
-       (update acc :chars conj arg)
+  (loop [acc nil
+         pos? true
+         args args]
 
-       (string? arg)
-       (update acc :chars into (seq arg))
+    (let [[arg & args] args]
 
-       (vector? arg)
-       (update acc :ranges conj arg)
+      (cond
 
-       :else
-       (throw (ex-info "Wrong range argument" {:arg arg}))))
+        (nil? arg)
+        acc
 
-   {:chars #{}
-    :ranges #{}}
-   args))
+        (= '- arg)
+        (recur acc false args)
+
+        (char? arg)
+        (recur (update-in acc [pos? :chars] conj-set arg) true args)
+
+        (string? arg)
+        (recur (update-in acc [pos? :chars] conj-into (seq arg)) true args)
+
+        (vector? arg)
+        (recur (update-in acc [pos? :ranges] conj-set arg) true args)
+
+        :else
+        (recur acc true args)))))
 
 
 (defn char-in-range? [c [c-min c-max]]
-  ;; TODO: use compare
   (<= (int c-min) (int c) (int c-max)))
 
 
+(defrecord RangeParser [chars-neg
+                        ranges-neg
+                        chars-pos
+                        ranges-pos]
 
-(defn fn-range-parser
-  [{:keys [chars-pos
-           ranges-pos
-           chars-neg
-           ranges-neg]}
-   ^Source source]
+  IParser
 
-  (let [char-in
-        (read-char source)]
+  (-parse [this chars]
 
-    (if (eof? char-in)
-      (failure "EOF reached" "<EOF>")
+    (if-let [c (first chars)]
 
       (let [allowed?
-            (if (or (contains? chars-neg char-in)
+            (if (or (contains? chars-neg c)
                     (when ranges-neg
-                      (some (partial char-in-range? char-in) ranges-neg)))
+                      (some (partial char-in-range? c) ranges-neg)))
               false
               (if (or chars-pos ranges-pos)
-                (or (contains? chars-pos char-in)
+                (or (contains? chars-pos c)
                     (when ranges-pos
-                      (some (partial char-in-range? char-in) ranges-pos)))
+                      (some (partial char-in-range? c) ranges-pos)))
                 true))]
 
         (if allowed?
-          char-in
-          (do
-            (unread-char source char-in)
-            (let [message
-                  (with-out-str
-                    (printf "Character %s is not allowed for this parser. " char-in)
-                    (when (or chars-pos ranges-pos)
-                      (print "The allowed characters are ")
-                      (doseq [c chars-pos]
-                        (print c))
-                      (doseq [[c-min c-max] ranges-pos]
-                        (printf "[%s-%s]" c-min c-max)))
-                    (print \.)
-                    (when (or chars-neg ranges-neg)
-                      (print "The disallowed characters are ")
-                      (doseq [c chars-neg]
-                        (print c))
-                      (doseq [[c-min c-max] ranges-neg]
-                        (printf "[%s-%s]" c-min c-max))))]
-              (failure message char-in))))))))
+          (success c (rest chars))
+          (let [message
+                (with-out-str
+                  (printf "Character %s is not allowed for this parser. " c)
+                  (when (or chars-pos ranges-pos)
+                    (print "The allowed characters are ")
+                    (doseq [c chars-pos]
+                      (print c))
+                    (doseq [[c-min c-max] ranges-pos]
+                      (printf "[%s-%s]" c-min c-max)))
+                  (print \.)
+                  (when (or chars-neg ranges-neg)
+                    (print "The disallowed characters are ")
+                    (doseq [c chars-neg]
+                      (print c))
+                    (doseq [[c-min c-max] ranges-neg]
+                      (printf "[%s-%s]" c-min c-max))))]
+            (failure message c))))
+      (failure "EOF reached" ""))))
 
 
-(defn make-range-parser
-  [args-pos args-neg options]
-
-  (let [{chars-pos :chars
-         ranges-pos :ranges}
-        (collect-range-args args-pos)
-
-        {chars-neg :chars
-         ranges-neg :ranges}
-        (collect-range-args args-neg)]
-
-    (merge
-     options
-     {:type :range
-      :chars-pos (not-empty chars-pos)
-      :ranges-pos (not-empty ranges-pos)
-      :chars-neg (not-empty chars-neg)
-      :ranges-neg (not-empty ranges-neg)
-      :fn-parse fn-range-parser})))
+(defn make-range-parser [chars-pos chars-neg ranges-pos ranges-neg options]
+  (-> options
+      (merge {:type 'range
+              :chars-pos chars-pos
+              :chars-neg chars-neg
+              :ranges-pos ranges-pos
+              :ranges-neg ranges-neg})
+      (map->RangeParser)))
 
 
-
-(defmethod compile 'range
-  [[_ & args-raw]]
+(defmethod -compile-vector 'range
+  [[_ & args]]
 
   (let [[args-req args-opt]
-        (split-args args-raw)
+        (split-args args)
 
         options
         (apply hash-map args-opt)
 
-        [args-pos args-neg]
-        (split-with (complement #{'- -}) args-req)
+        args-map
+        (collect-range-args args-req)
 
-        args-neg
-        (next args-neg)]
+        chars-pos
+        (some-> args-map (get true) :chars not-empty)
 
-    (make-range-parser args-pos args-neg options)))
+        chars-neg
+        (some-> args-map (get false) :chars not-empty)
 
+        ranges-pos
+        (some-> args-map (get true) :ranges not-empty)
 
+        ranges-neg
+        (some-> args-map (get false) :ranges not-empty)]
 
-
-
-
-(def ws+
-  '[+ [or [["\r"] ["\n"] ["\t"] [\space]]] :acc :str :skip? true])
-
-(def ws*
-  '[* [or [["\r"] ["\n"] ["\t"] [\space]]] :acc :str :skip? true])
-
-(def digit
-  '[range [\0 \9]])
+    (make-range-parser chars-pos chars-neg ranges-pos ranges-neg options)))
 
 
-(comment
+;;
+;; MM-compiler
+;;
 
-  (def -spec
-    '[range [\a \z] [\0 \9] "ABC" - "_" [\3 \5]])
-
-  (def -parser
-    (compile -spec))
-
-  (def -s
-    (make-source-from-string "4"))
-
-  (parse -parser -s)
+(defmethod -compile-vector :string
+  [[string & {:as options}]]
+  (make-string-parser string options))
 
 
-  )
+(defmethod -compile-vector :char
+  [[ch & {:as options}]]
+  (make-string-parser (str ch) options))
+
+
+;;
+;; Compiler
+;;
+
+(extend-protocol ICompiler
+
+  String
+
+  (-compile [this]
+    (make-string-parser this nil))
+
+  Character
+
+  (-compile [this]
+    (make-string-parser (str this) nil))
+
+  clojure.lang.Symbol
+
+  (-compile [this]
+    this)
+
+  clojure.lang.PersistentList
+  (-compile [args]
+    (-compile-group-impl args))
+
+  clojure.lang.PersistentVector
+
+  (-compile [this]
+    (-compile-vector this)))
+
+
+(defn compile [spec]
+  (reduce-kv
+   (fn [acc sym parser]
+     (assoc acc sym (compile-inner parser)))
+   {}
+   spec))
+
+
+(defn parse [defs sym chars]
+  (binding [*definitions* defs]
+
+    (match (parse-inner sym chars)
+
+      (Success {:keys [data chars]})
+      data
+
+      (Failure {:as f :keys [message]})
+      (throw (ex-info (format "Parsing failure: %s" message)
+                      {:failure f :symbol sym})))))
+
+
+(defn reader->seq [^Reader reader]
+  (let [c (.read reader)]
+    (when-not (neg? c)
+      (lazy-seq (cons (char c) (reader->seq reader))))))
