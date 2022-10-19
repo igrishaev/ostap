@@ -163,7 +163,8 @@
                             meta
                             skip?
                             coerce
-                            return]}
+                            return]
+                     :or {return ::empty}}
                     chars]
 
   (match (-parse parser chars)
@@ -187,7 +188,7 @@
 
           (cond-> data
 
-            return
+            (not= return ::empty)
             (as [_]
               return)
 
@@ -693,11 +694,48 @@
     [+ [range [\a \z] [\A \Z] [\0 \9]] :string? true]
 
     value
-    (ws* word ws+ word ws*)})
+    (ws* word ws+ word ws*)
+
+    json/json
+    (ws* [or
+          json/true
+          json/false
+          json/null
+          json/string
+          json/array] :coerce first)
+
+    json/string
+    (\" [* json/char :string? true] \" :coerce second)
+
+    json/char
+    [or
+     [range [\u0020 \uffff] -\\ -\"]
+     (\\ [or
+          [\r :return \return]
+          [\n :return \newline]
+          [\t :return \tab]]
+      :coerce second)]
+
+    json/array
+    [or
+     (\[ ws* \] :return [])
+     (\[ [join (ws* \, ws*) json/json] ws* \]) :coerce second]
+
+    json/true
+    ["true" :return true]
+
+    json/false
+    ["false" :return false]
+
+    json/null
+    ["null" :return nil]
+    }
+
+  )
 
 
 (def -defs
   (compile-defs -spec))
 
 #_
-(parse -defs 'value "  abc   \t dbc  ")
+(parse -defs 'json/json "true")
