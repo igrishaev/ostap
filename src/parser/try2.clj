@@ -791,7 +791,7 @@
     json/array
     [or
      (<arr ws arr> :return [])
-     (<arr [join comma json/json] ws arr> :coerce first)]
+     (<arr ws [join comma json/json] ws arr> :coerce first)]
 
     json/true
     ["true" :return true]
@@ -819,6 +819,9 @@
 
 (def -defs
   (compile-defs -spec))
+
+
+;; TODO: lazy seq of chars
 
 #_
 (parse -defs 'json/json "true")
