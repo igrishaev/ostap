@@ -214,7 +214,9 @@
   (if (symbol? parser)
     (if-let [parser (get *definitions* parser)]
       (parse-inner- parser chars)
-      (failure (format "No definition found for parser %s" parser) nil))
+      (throw (ex-info (format "No definition found for parser %s" parser)
+                      {:parser parser
+                       :chars chars})))
     (parse-inner- parser chars)))
 
 
@@ -684,25 +686,30 @@
 
 
 (def -spec
-  '{ws*
+  '{ws
     [* [range "\r\n\t "] :skip? true]
 
-    ws+
-    [+ [range "\r\n\t "] :skip? true]
+    hex
+    [range [\0 \9] [\a \f] [\A \F]]
 
-    word
-    [+ [range [\a \z] [\A \Z] [\0 \9]] :string? true]
+    comma
+    (ws \, ws :skip? true)
 
-    value
-    (ws* word ws+ word ws*)
+    colon
+    (ws \: ws :skip? true)
+
+    sign
+    [or \+ \-]
 
     json/json
-    (ws* [or
-          json/true
-          json/false
-          json/null
-          json/string
-          json/array] :coerce first)
+    (ws [or
+         json/true
+         json/false
+         json/null
+         json/number
+         json/string
+         json/array
+         json/object] :coerce first)
 
     json/string
     (\" [* json/char :string? true] \" :coerce second)
@@ -713,13 +720,49 @@
      (\\ [or
           [\r :return \return]
           [\n :return \newline]
-          [\t :return \tab]]
+          [\t :return \tab]
+          (\u hex hex hex hex :coerce parse-uXXXX)]
       :coerce second)]
+
+    json/object
+    [or
+     (ws \{ ws \} :return {})
+     (ws \{ ws [join comma json/keyval] ws \} :coerce second)]
+
+    json/keyval
+    (json/string colon json/json)
+
+    json/digits+
+    [+ json/digit :string? true]
+
+    json/digits*
+    [* json/digit :string? true]
+
+    json/fraction
+    (\. json/digits+ :string? true)
+
+    json/exponent
+    ([or \e \E] [? sign] json/digits+)
+
+    json/number
+    (json/integer [? (json/fraction [? json/exponent])])
+
+    json/digit
+    [range [\0 \9]]
+
+    json/onenine
+    [range [\1 \9]]
+
+    json/integer
+    ([? \- ]
+     [or
+      (json/onenine json/digits* :string? true)
+      json/digit])
 
     json/array
     [or
-     (\[ ws* \] :return [])
-     (\[ [join (ws* \, ws*) json/json] ws* \]) :coerce second]
+     (\[ ws \] :return [])
+     (\[ [join (ws \, ws) json/json] ws \] :coerce second)]
 
     json/true
     ["true" :return true]
@@ -733,6 +776,13 @@
 
   )
 
+
+(defn parse-number [[[sign [number numbers]]]]
+  (str sign number)
+  )
+
+(defn parse-uXXXX [[_ h1 h2 h3 h4]]
+  (char (Integer/parseInt (str h1 h2 h3 h4) 16)))
 
 (def -defs
   (compile-defs -spec))
