@@ -3,6 +3,26 @@
   (:refer-clojure :exclude [compile]))
 
 
+(defprotocol ICompiler
+  (-compile [this]))
+
+
+(defn resolve-func [sym]
+  (or (some-> sym resolve deref)
+      (throw (ex-info "Function not found" {:sym sym}))))
+
+
+(defn compile-inner [x]
+  (let [c (-compile x)]
+    (cond-> c
+      (:coerce c)
+      (update :coerce resolve-func))))
+
+
+(defn split-args [form]
+  (split-with (complement keyword?) form))
+
+
 (defmacro match
   {:style/indent 1}
   [x & pattern-body]
@@ -104,11 +124,14 @@
 ;; Success
 ;;
 
-(defrecord Success [data chars])
+(defrecord Success [data chars skip?])
 
 
-(defn success [data chars]
-  (new Success data chars))
+(defn success
+  ([data chars]
+   (new Success data chars false))
+  ([data chars skip?]
+   (new Success data chars skip?)))
 
 
 (defn success? [x]
@@ -134,20 +157,21 @@
      ~@body))
 
 
-(defn parse-inner [{:as parser
-                    :keys [tag
-                           meta
-                           skip?
-                           coerce
-                           return]}
-                   chars]
+(defn parse-inner- [{:as parser
+                     :keys [tag
+                            type
+                            meta
+                            skip?
+                            coerce
+                            return]}
+                    chars]
 
   (match (-parse parser chars)
 
     (Success {:as s :keys [data chars]})
     (if skip?
 
-      (assoc s :skip? true)
+      (success data chars true)
 
       (let [[e data]
             (if coerce
@@ -185,6 +209,14 @@
     f))
 
 
+(defn parse-inner [parser chars]
+  (if (symbol? parser)
+    (if-let [parser (get *definitions* parser)]
+      (parse-inner- parser chars)
+      (failure (format "No definition found for parser %s" parser) nil))
+    (parse-inner- parser chars)))
+
+
 ;;
 ;; StringParser
 ;;
@@ -192,38 +224,38 @@
 (defrecord StringParser
     [string i?]
 
-  IParser
+    IParser
 
-  (-parse [_ chars]
+    (-parse [_ chars]
 
-    (loop [sb (new StringBuilder)
-           [ch1 & string] string
-           [ch2 & chars] chars]
+      (loop [sb (new StringBuilder)
+             [ch1 & string] string
+             [ch2 & chars] chars]
 
-      (cond
+        (cond
 
-        (nil? ch1)
-        (success (str sb) (cons ch2 chars))
+          (nil? ch1)
+          (success (str sb) (cons ch2 chars))
 
-        (nil? ch2)
-        (failure "EOF reached" (str sb))
+          (nil? ch2)
+          (failure "EOF reached" (str sb))
 
-        (if i?
-          (= (Character/toLowerCase ^Character ch1)
-             (Character/toLowerCase ^Character ch2))
-          (= ch1 ch2))
-        (recur (.append sb ch2) string chars)
+          (if i?
+            (= (Character/toLowerCase ^Character ch1)
+               (Character/toLowerCase ^Character ch2))
+            (= ch1 ch2))
+          (recur (.append sb ch2) string chars)
 
-        :else
-        (failure
-         (format "Expected %s but got %s, i?: %s"
-                 ch1 ch2 i?)
-         (str sb))))))
+          :else
+          (failure
+           (format "Expected %s but got %s, i?: %s"
+                   ch1 ch2 i?)
+           (str sb))))))
 
 
 (defn make-string-parser [string options]
   (-> options
-      (merge {:string string})
+      (merge {:type 'string :string string})
       (map->StringParser)))
 
 
@@ -246,8 +278,10 @@
 
         (match (parse-inner parser chars)
 
-          (Success {:keys [data chars]})
-          (recur (inc i) parsers (acc-add acc data) chars)
+          (Success {:keys [data chars skip?]})
+          (if skip?
+            (recur (inc i) parsers acc chars)
+            (recur (inc i) parsers (acc-add acc data) chars))
 
           (Failure f)
           (let [message
@@ -259,7 +293,7 @@
 
 (defn make-group-parser [parsers options]
   (-> options
-      (merge {:parsers parsers})
+      (merge {:type 'group :parsers parsers})
       (correct-acc-string)
       (add-acc-funcs)
       (map->GroupParser)))
@@ -294,7 +328,7 @@
 
 (defn make-?-parser [parser options]
   (-> options
-      (merge {:parser parser})
+      (merge {:type '? :parser parser})
       (map->?Parser)))
 
 
@@ -320,8 +354,10 @@
              chars chars]
 
         (match (parse-inner parser chars)
-          (Success {:keys [data chars]})
-          (recur (acc-add acc data) chars)
+          (Success {:keys [data chars skip?]})
+          (if skip?
+            (recur acc chars)
+            (recur (acc-add acc data) chars))
 
           (Failure f)
           (success acc chars)))
@@ -333,7 +369,7 @@
 
 (defn make-+-parser [parser options]
   (-> options
-      (merge {:parser parser})
+      (merge {:type '+ :parser parser})
       (correct-acc-string)
       (add-acc-funcs)
       (map->+Parser)))
@@ -356,15 +392,17 @@
     (loop [acc (acc-new)
            chars chars]
       (match (parse-inner parser chars)
-        (Success {:keys [data chars]})
-        (recur (acc-add acc data) chars)
+        (Success {:keys [data chars skip?]})
+        (if skip?
+          (recur acc chars)
+          (recur (acc-add acc data) chars))
         (Failure f)
         (success acc chars)))))
 
 
 (defn make-*-parser [parser options]
   (-> options
-      (merge {:parser parser})
+      (merge {:type '* :parser parser})
       (correct-acc-string)
       (add-acc-funcs)
       (map->*Parser)))
@@ -396,7 +434,7 @@
 
 (defn make-or-parser [parsers options]
   (-> options
-      (merge {:parsers parsers})
+      (merge {:type 'or :parsers parsers})
       (map->OrParser)))
 
 
@@ -442,6 +480,7 @@
 (defn make-join-parser [sep parser options]
   (-> options
       (merge {:sep sep
+              :type 'join
               :parser parser})
       (map->JoinParser)))
 
@@ -542,7 +581,8 @@
 
 (defn make-range-parser [chars-pos chars-neg ranges-pos ranges-neg options]
   (-> options
-      (merge {:chars-pos chars-pos
+      (merge {:type 'range
+              :chars-pos chars-pos
               :chars-neg chars-neg
               :ranges-pos ranges-pos
               :ranges-neg ranges-neg})
@@ -577,41 +617,8 @@
 
 
 ;;
-;; Symbol compiler
-;;
-
-(extend-protocol IParser
-
-  clojure.lang.Symbol
-
-  (-parse [this chars]
-    (if-let [parser (get *definitions* this)]
-      (parse-inner parser chars)
-      (failure (format "No definition found for parser %s" this) nil))))
-
-
-(defprotocol ICompiler
-  (-compile [this]))
-
-
-(defn resolve-func [sym]
-  (or (some-> sym resolve deref)
-      (throw (ex-info "Function not found" {:sym sym}))))
-
-
-(defn compile-inner [x]
-  (let [c (-compile x)]
-    (cond-> c
-      (:coerce c)
-      (update :coerce resolve-func))))
-
-;;
 ;; MM-compiler
 ;;
-
-(defn split-args [form]
-  (split-with (complement keyword?) form))
-
 
 (defmethod -compile-vector :string
   [[string & {:as options}]]
@@ -683,8 +690,7 @@
     [+ [range "\r\n\t "] :skip? true]
 
     word
-    [+ [range [\a \z] [\A \Z] [\0 \9]]
-     :string? true :tag word]
+    [+ [range [\a \z] [\A \Z] [\0 \9]] :string? true]
 
     value
     (ws* word ws+ word ws*)})
@@ -692,10 +698,6 @@
 
 (def -defs
   (compile-defs -spec))
-
-
-(defn parse-int [chars]
-  (->> chars (apply str) (Integer/parseInt)))
 
 #_
 (parse -defs 'value "  abc   \t dbc  ")
