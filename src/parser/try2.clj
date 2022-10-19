@@ -71,6 +71,14 @@
         (doto sb
           (.append x)))}
 
+     (map :map "map")
+     {:acc-new
+      (fn []
+        {})
+      :acc-add
+      (fn [acc pair]
+        (conj acc pair))}
+
      (vector :vector "vector")
      {:acc-new
       (fn []
@@ -214,9 +222,7 @@
   (if (symbol? parser)
     (if-let [parser (get *definitions* parser)]
       (parse-inner- parser chars)
-      (throw (ex-info (format "No definition found for parser %s" parser)
-                      {:parser parser
-                       :chars chars})))
+      (failure (format "No definition found for parser %s" parser) nil))
     (parse-inner- parser chars)))
 
 
@@ -457,7 +463,7 @@
 ;; JoinParser
 ;;
 
-(defrecord JoinParser [sep parser]
+(defrecord JoinParser [sep parser acc-new acc-add]
 
   IParser
 
@@ -465,13 +471,13 @@
 
     (match (parse-inner parser chars)
       (Success {:keys [data chars]})
-      (loop [acc [data]
+      (loop [acc (acc-add (acc-new) data)
              chars chars]
         (match (parse-inner sep chars)
           (Success {:keys [data chars]})
           (match (parse-inner parser chars)
             (Success {:keys [data chars]})
-            (recur (conj acc data) chars)
+            (recur (acc-add acc data) chars)
             (Failure f)
             (failure "Join error: parser has failed after separator" (conj acc f)))
           (Failure f)
@@ -485,6 +491,8 @@
       (merge {:sep sep
               :type 'join
               :parser parser})
+      (correct-acc-string)
+      (add-acc-funcs)
       (map->JoinParser)))
 
 
@@ -687,7 +695,7 @@
 
 (def -spec
   '{ws
-    [* [range "\r\n\t "] :skip? true]
+    [* [range \return \newline \tab \space] :skip? true]
 
     hex
     [range [\0 \9] [\a \f] [\A \F]]
@@ -701,6 +709,21 @@
     sign
     [or \+ \-]
 
+    quote
+    [\" :skip? true]
+
+    <obj
+    [\{ :skip? true]
+
+    obj>
+    [\} :skip? true]
+
+    <arr
+    [\[ :skip? true]
+
+    arr>
+    [\] :skip? true]
+
     json/json
     (ws [or
          json/true
@@ -712,12 +735,17 @@
          json/object] :coerce first)
 
     json/string
-    (\" [* json/char :string? true] \" :coerce second)
+    (quote [* json/char :string? true] quote :coerce first)
 
     json/char
     [or
      [range [\u0020 \uffff] -\\ -\"]
      (\\ [or
+          \"
+          \\
+          \/
+          [\f :retunr \formfeed]
+          [\b :return \backspace]
           [\r :return \return]
           [\n :return \newline]
           [\t :return \tab]
@@ -726,8 +754,9 @@
 
     json/object
     [or
-     (ws \{ ws \} :return {})
-     (ws \{ ws [join comma json/keyval] ws \} :coerce second)]
+     (ws <obj ws obj> :return {})
+     (ws <obj ws [join comma json/keyval :acc map] ws obj>
+         :coerce first)]
 
     json/keyval
     (json/string colon json/json)
@@ -745,7 +774,7 @@
     ([or \e \E] [? sign] json/digits+)
 
     json/number
-    (json/integer [? (json/fraction [? json/exponent])])
+    (json/integer [? (json/fraction [? json/exponent])] :coerce parse-number)
 
     json/digit
     [range [\0 \9]]
@@ -761,8 +790,8 @@
 
     json/array
     [or
-     (\[ ws \] :return [])
-     (\[ [join (ws \, ws) json/json] ws \] :coerce second)]
+     (<arr ws arr> :return [])
+     (<arr [join comma json/json] ws arr> :coerce first)]
 
     json/true
     ["true" :return true]
@@ -771,15 +800,19 @@
     ["false" :return false]
 
     json/null
-    ["null" :return nil]
-    }
-
-  )
+    ["null" :return nil]})
 
 
-(defn parse-number [[[sign [number numbers]]]]
-  (str sign number)
-  )
+(defn parse-number [[[int-sign int-digits] [fraction [exp exp-sign exp-digits]]]]
+  (if fraction
+    (Double/parseDouble (str (or int-sign "")
+                             int-digits
+                             fraction
+                             (if exp
+                               (str exp (or exp-sign "") exp-digits)
+                               "")))
+    (Long/parseLong (str (or int-sign "") int-digits))))
+
 
 (defn parse-uXXXX [[_ h1 h2 h3 h4]]
   (char (Integer/parseInt (str h1 h2 h3 h4) 16)))
