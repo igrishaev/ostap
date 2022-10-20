@@ -4,113 +4,114 @@
    [ostap.core :as o]))
 
 (def grammar
-  '{ws
-    [* [range \return \newline \tab \space] :skip? true]
+  '
+  {ws
+   [* [range \return \newline \tab \space] :skip? true]
 
-    hex
-    [range [\0 \9] [\a \f] [\A \F]]
+   hex
+   [range [\0 \9] [\a \f] [\A \F]]
 
-    comma
-    (ws \, ws :skip? true)
+   comma
+   (ws \, ws :skip? true)
 
-    colon
-    (ws \: ws :skip? true)
+   colon
+   (ws \: ws :skip? true)
 
-    sign
-    [or \+ \-]
+   sign
+   [or \+ \-]
 
-    quote
-    [\" :skip? true]
+   quote
+   [\" :skip? true]
 
-    <obj
-    [\{ :skip? true]
+   <obj
+   [\{ :skip? true]
 
-    obj>
-    [\} :skip? true]
+   obj>
+   [\} :skip? true]
 
-    <arr
-    [\[ :skip? true]
+   <arr
+   [\[ :skip? true]
 
-    arr>
-    [\] :skip? true]
+   arr>
+   [\] :skip? true]
 
-    json/json
-    (ws [or
-         json/true
-         json/false
-         json/null
-         json/number
-         json/string
-         json/array
-         json/object] :coerce first)
+   json/json
+   (ws [or
+        json/true
+        json/false
+        json/null
+        json/number
+        json/string
+        json/array
+        json/object] :coerce first)
 
-    json/string
-    (quote [* json/char :string? true] quote :coerce first)
+   json/string
+   (quote [* json/char :string? true] quote :coerce first)
 
-    json/char
+   json/char
+   [or
+    [range [\u0020 \uffff] -\\ -\"]
+    (\\ [or
+         \"
+         \\
+         \/
+         [\f :retunr \formfeed]
+         [\b :return \backspace]
+         [\r :return \return]
+         [\n :return \newline]
+         [\t :return \tab]
+         (\u hex hex hex hex :coerce -parse-uXXXX)]
+     :coerce second)]
+
+   json/object
+   [or
+    (ws <obj ws obj> :return {})
+    (ws <obj ws [join comma json/keyval :acc map] ws obj>
+        :coerce first)]
+
+   json/keyval
+   (json/string colon json/json)
+
+   json/digits+
+   [+ json/digit :string? true]
+
+   json/digits*
+   [* json/digit :string? true]
+
+   json/fraction
+   (\. json/digits+ :string? true)
+
+   json/exponent
+   ([or \e \E] [? sign] json/digits+)
+
+   json/number
+   (json/integer [? (json/fraction [? json/exponent])] :coerce -parse-number)
+
+   json/digit
+   [range [\0 \9]]
+
+   json/onenine
+   [range [\1 \9]]
+
+   json/integer
+   ([? \- ]
     [or
-     [range [\u0020 \uffff] -\\ -\"]
-     (\\ [or
-          \"
-          \\
-          \/
-          [\f :retunr \formfeed]
-          [\b :return \backspace]
-          [\r :return \return]
-          [\n :return \newline]
-          [\t :return \tab]
-          (\u hex hex hex hex :coerce -parse-uXXXX)]
-      :coerce second)]
+     (json/onenine json/digits* :string? true)
+     json/digit])
 
-    json/object
-    [or
-     (ws <obj ws obj> :return {})
-     (ws <obj ws [join comma json/keyval :acc map] ws obj>
-         :coerce first)]
+   json/array
+   [or
+    (<arr ws arr> :return [])
+    (<arr ws [join comma json/json] ws arr> :coerce first)]
 
-    json/keyval
-    (json/string colon json/json)
+   json/true
+   ["true" :return true]
 
-    json/digits+
-    [+ json/digit :string? true]
+   json/false
+   ["false" :return false]
 
-    json/digits*
-    [* json/digit :string? true]
-
-    json/fraction
-    (\. json/digits+ :string? true)
-
-    json/exponent
-    ([or \e \E] [? sign] json/digits+)
-
-    json/number
-    (json/integer [? (json/fraction [? json/exponent])] :coerce -parse-number)
-
-    json/digit
-    [range [\0 \9]]
-
-    json/onenine
-    [range [\1 \9]]
-
-    json/integer
-    ([? \- ]
-     [or
-      (json/onenine json/digits* :string? true)
-      json/digit])
-
-    json/array
-    [or
-     (<arr ws arr> :return [])
-     (<arr ws [join comma json/json] ws arr> :coerce first)]
-
-    json/true
-    ["true" :return true]
-
-    json/false
-    ["false" :return false]
-
-    json/null
-    ["null" :return nil]})
+   json/null
+   ["null" :return nil]})
 
 
 (defn -parse-number [[[int-sign int-digits] [fraction [exp exp-sign exp-digits]]]]
