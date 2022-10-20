@@ -221,7 +221,7 @@
 (defn parse-inner [parser chars]
   (if (symbol? parser)
     (if-let [parser (get *definitions* parser)]
-      (parse-inner- parser chars)
+      (recur parser chars)
       (failure (format "No definition found for parser %s" parser) nil))
     (parse-inner- parser chars)))
 
@@ -475,7 +475,7 @@
 
 
 (defn make-eof-parser []
-  (new EOFParser))
+  (map->EOFParser {:skip? true}))
 
 
 ;;

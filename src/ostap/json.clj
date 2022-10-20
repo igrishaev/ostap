@@ -36,14 +36,17 @@
    [\] :skip? true]
 
    json/json
-   (ws [or
-        json/true
-        json/false
-        json/null
-        json/number
-        json/string
-        json/array
-        json/object] :coerce first)
+   (ws json/element ws EOF :coerce first)
+
+   json/element
+   [or
+    json/true
+    json/false
+    json/null
+    json/number
+    json/string
+    json/array
+    json/object]
 
    json/string
    (quote [* json/char :string? true] quote :coerce first)
@@ -70,7 +73,7 @@
         :coerce first)]
 
    json/keyval
-   (json/string colon json/json)
+   (json/string colon json/element)
 
    json/digits+
    [+ json/digit :string? true]
@@ -102,7 +105,7 @@
    json/array
    [or
     (<arr ws arr> :return [])
-    (<arr ws [join comma json/json] ws arr> :coerce first)]
+    (<arr ws [join comma json/element] ws arr> :coerce first)]
 
    json/true
    ["true" :return true]
