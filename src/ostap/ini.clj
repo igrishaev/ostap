@@ -13,8 +13,13 @@
    ws
    [* [or \space \tab] :skip? true]
 
+
    line/comment
-   (ws \# [+ [range [\u0020 \uffff] -\newline -\return]] :skip? true)
+   (\# [* [range -\newline -\return]] :skip? true)
+
+
+   ;; line/comment
+   ;; (ws \# [+ [range [\u0020 \uffff] -\newline -\return]] :skip? true)
 
    line/blank
    [* [range \space \tab] :skip? true]
@@ -37,6 +42,12 @@
    ini/key
    [+ [range [\u0020 \uffff] -\= -\space] :string? true]
 
+   foo/bar
+   (ws [? [or line/comment ini/keyval]] :coerce first)
+
+   aaa
+   ([* (ini/headline [or EOF (br [join br foo/bar])])] EOF)
+
    ini/val
    [or
     (\' [* [range [\u0020 \uffff] -\'] :string? true] \' :coerce second)
@@ -44,7 +55,7 @@
     [* [range [\u0020 \uffff] -\space] :string? true]]
 
    ini/keyval
-   (ws ini/key (ws \= ws :skip? true) ini/val ws)
+   (ini/key (ws \= ws :skip? true) ini/val ws)
 
    ini/keyvals
    [join separator ini/keyval]
@@ -111,7 +122,7 @@
 
 
 (defn parse-string [string]
-  (o/parse defs 'ini/headline string))
+  (o/parse defs 'aaa string))
 
 
 (def INI
