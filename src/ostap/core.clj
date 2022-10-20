@@ -244,7 +244,8 @@
         (cond
 
           (nil? ch1)
-          (success (str sb) (cons ch2 chars))
+          (success (str sb) (when ch2
+                              (cons ch2 chars)))
 
           (nil? ch2)
           (failure "EOF reached" (str sb))
