@@ -1,7 +1,7 @@
-(ns parser.json
+(ns ostap.json
   (:require
    [clojure.java.io :as io]
-   [parser.core :as p]))
+   [ostap.core :as o]))
 
 (def grammar
   '{ws
@@ -129,17 +129,17 @@
 
 
 (def defs
-  (p/compile grammar))
+  (o/compile grammar))
 
 
 (defn parse-string [string]
-  (p/parse defs 'json/json string))
+  (o/parse defs 'json/json string))
 
 
 (defn parse-stream [input & [{:keys [encoding]
                               :or {encoding "UTF-8"}}]]
-  (p/parse defs
+  (o/parse defs
                 'json/json
                 (-> input
                     (io/reader :encoding encoding)
-                    (p/reader->seq))))
+                    (o/reader->seq))))

@@ -1,4 +1,4 @@
-(ns parser.core
+(ns ostap.core
   (:refer-clojure :exclude [compile])
   (:import java.util.ArrayList
            java.io.Reader))
