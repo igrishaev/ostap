@@ -460,6 +460,25 @@
 
 
 ;;
+;; EOFParser
+;;
+
+(defrecord EOFParser []
+
+  IParser
+
+  (-parse [_ chars]
+    (let [[c & chars] chars]
+      (if c
+        (failure (format "expected EOF but %s found" c) "")
+        (success "" chars)))))
+
+
+(defn make-eof-parser []
+  (new EOFParser))
+
+
+;;
 ;; JoinParser
 ;;
 
@@ -674,11 +693,14 @@
 
 
 (defn compile [spec]
-  (reduce-kv
-   (fn [acc sym parser]
-     (assoc acc sym (compile-inner parser)))
-   {}
-   spec))
+  (assoc
+   (reduce-kv
+    (fn [acc sym parser]
+      (assoc acc sym (compile-inner parser)))
+    {}
+    spec)
+   'EOF
+   (make-eof-parser)))
 
 
 (defn parse [defs sym chars]

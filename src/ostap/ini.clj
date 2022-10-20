@@ -49,17 +49,49 @@
    ini/keyvals
    [join separator ini/keyval]
 
+   digits
+   [or
+    (digit [\, :skip? true] digits)
+    digit]
+
+   digit
+   [range [\0 \9]]
+
+   ;; section
+   ;;   title
+   ;;   title br
+   ;;   title br body
+
+   ;; line
+   ;;   comment
+   ;;   blank
+   ;;   keyval
+
+   ;; body
+   ;;   line
+   ;;   line br body
+
+
+   ;; section
+   ;; section br body
+
+   ;; line
+   ;;   blank
+   ;;   comment
+   ;;   keywal
+
+   ;; body
+   ;;   [line br line]
+   ;;   line
+   ;;   nil
+
+
+
    ini/section
-   (ini/headline [join br [or ini/keyval line/comment line/blank]])
-
-
-   ini/foo
-   (ini/headline [? (br [? [join br [or ini/keyval line/comment line/blank]]] :coerce first)])
-
-   ini/foo2
-   [* ini/foo]
-
-
+   (ini/headline
+    [or
+     (br [join br [or ini/keyval line/comment line/blank]])
+     ini/headline])
 
    ini/ini
    [* ini/section]
