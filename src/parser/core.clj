@@ -117,7 +117,7 @@
 
   Object
 
-  (toString [this]
+  (toString [_]
     (format "<<%s>>" message)))
 
 
@@ -168,7 +168,6 @@
 
 (defn parse-inner- [{:as parser
                      :keys [tag
-                            type
                             meta
                             skip?
                             coerce
@@ -178,7 +177,7 @@
 
   (match (-parse parser chars)
 
-    (Success {:as s :keys [data chars]})
+    (Success {:keys [data chars]})
     (if skip?
 
       (success data chars true)
@@ -277,7 +276,7 @@
 
   IParser
 
-  (-parse [this chars]
+  (-parse [_ chars]
 
     (loop [i 0
            [parser & parsers] parsers
@@ -330,7 +329,7 @@
 
   IParser
 
-  (-parse [this chars]
+  (-parse [_ chars]
     (match (parse-inner parser chars)
       (Success s) s
       (Failure f) (success nil chars))))
@@ -356,7 +355,7 @@
 
   IParser
 
-  (-parse [this chars]
+  (-parse [_ chars]
     (match (parse-inner parser chars)
 
       (Success {:keys [data chars]})
@@ -398,7 +397,7 @@
 
   IParser
 
-  (-parse [this chars]
+  (-parse [_ chars]
     (loop [acc (acc-new)
            chars chars]
       (match (parse-inner parser chars)
@@ -431,7 +430,7 @@
 
   IParser
 
-  (-parse [this chars]
+  (-parse [_ chars]
     (loop [[parser & parsers] parsers]
       (if parser
         (match (parse-inner parser chars)
@@ -478,6 +477,7 @@
           (Success {:keys [data chars]})
           (match (parse-inner parser chars)
             (Success {:keys [data chars]})
+            #_:clj-kondo/ignore
             (recur (acc-add acc data) chars)
             (Failure f)
             (failure "Join error: parser has failed after separator" (conj acc f)))
@@ -554,7 +554,7 @@
 
   IParser
 
-  (-parse [this chars]
+  (-parse [_ chars]
 
     (if-let [c (first chars)]
 

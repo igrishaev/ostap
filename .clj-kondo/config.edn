@@ -1,0 +1,4 @@
+{:linters
+  {:unresolved-symbol
+    {:exclude [(parser.core/as [_ x])
+               (parser.core/match [data f skip? s message])]}}}
